@@ -1,0 +1,19 @@
+
+{
+  "name": "FIFA Pro Game Counter",
+  "short_name": "FIFA Pro",
+  "description": "Premium Game Zone Management Suite",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#000000",
+  "theme_color": "#d97706",
+  "orientation": "portrait",
+  "icons": [
+    {
+      "src": "https://cdn-icons-png.flaticon.com/512/621/621914.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
