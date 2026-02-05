@@ -1,0 +1,5 @@
+{
+  "name": "FIFA Pro Game Counter",
+  "description": "A specialized game tracking and revenue reporting system for FIFA PlayStation game zones, featuring worker-specific logging and comprehensive admin dashboards for multi-house management.",
+  "requestFramePermissions": []
+}
