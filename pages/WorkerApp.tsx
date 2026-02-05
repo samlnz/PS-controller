@@ -9,16 +9,25 @@ const WorkerApp: React.FC = () => {
   const [activeHouse, setActiveHouse] = useState<HouseId>('house1');
   const [customPrices, setCustomPrices] = useState<Record<string, number>>({});
 
+  const loadData = async () => {
+    const [fetchedGames, fetchedPrices] = await Promise.all([
+      getStoredGames(),
+      getTVPrices()
+    ]);
+    setGames(fetchedGames);
+    setCustomPrices(fetchedPrices);
+  };
+
   useEffect(() => {
-    setGames(getStoredGames());
-    setCustomPrices(getTVPrices());
+    loadData();
   }, []);
 
-  // Polling for updates (in case admin resets data)
+  // Polling for cloud updates
   useEffect(() => {
-    const interval = setInterval(() => {
-      setGames(getStoredGames());
-    }, 3000);
+    const interval = setInterval(async () => {
+      const refreshedGames = await getStoredGames();
+      setGames(refreshedGames);
+    }, 5000);
     return () => clearInterval(interval);
   }, []);
 
@@ -26,7 +35,7 @@ const WorkerApp: React.FC = () => {
     return customPrices[tvId] ?? defaultPrice;
   };
 
-  const handlePriceChange = (tvId: string, newPrice: string) => {
+  const handlePriceChange = async (tvId: string, newPrice: string) => {
     const tvConfig = TV_CONFIGS.find(t => t.id === tvId);
     const basePrice = tvConfig?.pricePerGame ?? 0;
     
@@ -35,15 +44,14 @@ const WorkerApp: React.FC = () => {
       val = basePrice;
     }
 
-    // Enforce logic: Price cannot be decreased below the system base price
     const finalPrice = Math.max(val, basePrice);
     
     const updated = { ...customPrices, [tvId]: finalPrice };
     setCustomPrices(updated);
-    saveTVPrices(updated);
+    await saveTVPrices(updated);
   };
 
-  const handleAddGame = (tvId: string, price: number, isSeparator = false) => {
+  const handleAddGame = async (tvId: string, price: number, isSeparator = false) => {
     const newEntry: GameEntry = {
       id: Math.random().toString(36).substr(2, 9),
       tvId,
@@ -54,7 +62,7 @@ const WorkerApp: React.FC = () => {
     };
     const updated = [...games, newEntry];
     setGames(updated);
-    saveGames(updated);
+    await saveGames(updated);
   };
 
   const currentHouseTVs = TV_CONFIGS.filter(tv => tv.houseId === activeHouse);
@@ -69,7 +77,6 @@ const WorkerApp: React.FC = () => {
 
   const stats = getHouseStats(activeHouse);
 
-  // Determine grid layout based on number of TVs to divide screen equally
   const gridCols = currentHouseTVs.length > 2 ? 'grid-cols-2' : 'grid-cols-1';
   const gridRows = currentHouseTVs.length > 2 ? 'grid-rows-2' : `grid-rows-${currentHouseTVs.length}`;
 
@@ -137,13 +144,12 @@ const WorkerApp: React.FC = () => {
                 </div>
               </div>
 
-              {/* Scrollable Game Box Area - Vertical Layout */}
+              {/* Scrollable Game Box Area */}
               <div className="flex-grow p-4 overflow-y-auto scrollbar-thin">
                 <div className="grid grid-cols-3 gap-3">
-                  {/* Entries List */}
                   {tvEntries.map((entry) => {
                     if (entry.isSeparator) {
-                      displayCounter = 0; // Reset counter for next group
+                      displayCounter = 0; 
                       return (
                         <div key={entry.id} className="col-span-3 flex items-center gap-2 py-1">
                           <div className="h-[1px] flex-grow bg-amber-900/30"></div>
@@ -169,7 +175,6 @@ const WorkerApp: React.FC = () => {
                     );
                   })}
 
-                  {/* Controls */}
                   <div className="col-span-3 grid grid-cols-2 gap-3 mt-1">
                     <button
                       onClick={() => handleAddGame(tv.id, currentPrice)}
@@ -196,7 +201,7 @@ const WorkerApp: React.FC = () => {
       </div>
 
       <div className="flex-none py-3 text-center">
-        <p className="text-[8px] text-amber-900 font-black uppercase tracking-[0.5em]">Game history can be grouped by inserting separators for different users</p>
+        <p className="text-[8px] text-amber-900 font-black uppercase tracking-[0.5em]">Game history synced with cloud ledger</p>
       </div>
     </div>
   );

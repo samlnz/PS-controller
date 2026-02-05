@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
-import { GameEntry, HouseId } from '../types';
+import { GameEntry } from '../types';
 import { getStoredGames, clearAllData } from '../services/storage';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 
@@ -13,10 +13,11 @@ const AdminDashboard: React.FC = () => {
   const [period, setPeriod] = useState<Period>('today');
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
 
-  const refreshData = () => {
-    const freshGames = getStoredGames();
+  const refreshData = async () => {
+    const freshGames = await getStoredGames();
     setGames((prev) => {
-      if (prev.length !== freshGames.length) {
+      // Deep compare or simple length check to update timestamp
+      if (JSON.stringify(prev) !== JSON.stringify(freshGames)) {
         setLastUpdate(new Date().toLocaleTimeString());
         return freshGames;
       }
@@ -39,10 +40,10 @@ const AdminDashboard: React.FC = () => {
     };
   }, []);
 
-  const handleResetDay = () => {
-    if (confirm("OWNER ACTION REQUIRED: This will PERMANENTLY delete all historical game data and yields. Continue?")) {
-      clearAllData();
-      refreshData();
+  const handleResetDay = async () => {
+    if (confirm("OWNER ACTION REQUIRED: This will PERMANENTLY delete all historical game data and yields from the cloud. Continue?")) {
+      await clearAllData();
+      await refreshData();
       setLastUpdate(new Date().toLocaleTimeString());
     }
   };
@@ -177,7 +178,7 @@ const AdminDashboard: React.FC = () => {
           </div>
           <div className="mt-6 flex items-center gap-2 bg-black/10 w-fit px-3 py-1.5 rounded-full text-[10px] font-black uppercase border border-black/5">
             <span className="w-2 h-2 bg-black rounded-full animate-pulse"></span>
-            Report Sync Active
+            Cloud Sync Active
           </div>
         </div>
 
@@ -282,7 +283,7 @@ const AdminDashboard: React.FC = () => {
       <div className="bg-zinc-900 border border-amber-900/20 rounded-[2rem] overflow-hidden">
         <div className="px-8 py-6 border-b border-amber-900/20 flex justify-between items-center bg-black/20">
           <h4 className="text-xs font-black text-amber-500 uppercase tracking-[0.3em]">Detailed Daily Ledger</h4>
-          <span className="text-[9px] text-amber-800 font-bold uppercase tracking-widest">Auto-updating @ {lastUpdate}</span>
+          <span className="text-[9px] text-amber-800 font-bold uppercase tracking-widest">Cloud Update @ {lastUpdate}</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full">
