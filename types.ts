@@ -14,6 +14,7 @@ export interface GameEntry {
   timestamp: number;
   completed: boolean;
   amount: number;
+  isSeparator?: boolean;
 }
 
 export interface HouseStats {

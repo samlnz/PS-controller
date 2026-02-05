@@ -43,15 +43,16 @@ const WorkerApp: React.FC = () => {
     saveTVPrices(updated);
   };
 
-  const handleAddGame = (tvId: string, price: number) => {
-    const newGame: GameEntry = {
+  const handleAddGame = (tvId: string, price: number, isSeparator = false) => {
+    const newEntry: GameEntry = {
       id: Math.random().toString(36).substr(2, 9),
       tvId,
       timestamp: Date.now(),
       completed: true,
-      amount: price,
+      amount: isSeparator ? 0 : price,
+      isSeparator
     };
-    const updated = [...games, newGame];
+    const updated = [...games, newEntry];
     setGames(updated);
     saveGames(updated);
   };
@@ -59,11 +60,11 @@ const WorkerApp: React.FC = () => {
   const currentHouseTVs = TV_CONFIGS.filter(tv => tv.houseId === activeHouse);
   
   const getHouseStats = (houseId: HouseId) => {
-    const houseGames = games.filter(g => 
+    const houseEntries = games.filter(g => 
       TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === houseId
     );
-    const revenue = houseGames.reduce((acc, curr) => acc + curr.amount, 0);
-    return { count: houseGames.length, revenue };
+    const revenue = houseEntries.reduce((acc, curr) => acc + curr.amount, 0);
+    return { count: houseEntries.filter(g => !g.isSeparator).length, revenue };
   };
 
   const stats = getHouseStats(activeHouse);
@@ -103,9 +104,11 @@ const WorkerApp: React.FC = () => {
       {/* Vertical Grid Dividing Screen Equally */}
       <div className={`flex-grow grid ${gridCols} ${gridRows} gap-3 h-full`}>
         {currentHouseTVs.map((tv) => {
-          const tvGames = games.filter(g => g.tvId === tv.id);
+          const tvEntries = games.filter(g => g.tvId === tv.id);
           const currentPrice = getEffectivePrice(tv.id, tv.pricePerGame);
           
+          let displayCounter = 0;
+
           return (
             <div 
               key={tv.id} 
@@ -130,36 +133,61 @@ const WorkerApp: React.FC = () => {
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-[10px] text-amber-600 font-black">{tvGames.length} <span className="opacity-50">GAMES</span></p>
+                  <p className="text-[10px] text-amber-600 font-black">{tvEntries.filter(e => !e.isSeparator).length} <span className="opacity-50">GAMES</span></p>
                 </div>
               </div>
 
               {/* Scrollable Game Box Area - Vertical Layout */}
               <div className="flex-grow p-4 overflow-y-auto scrollbar-thin">
                 <div className="grid grid-cols-3 gap-3">
-                  {/* Completed Game Squares - Non-interactive as requested */}
-                  {tvGames.map((game, index) => (
-                    <div 
-                      key={game.id} 
-                      className="aspect-square bg-amber-500 rounded-2xl flex items-center justify-center text-black font-black text-lg relative shadow-md shadow-amber-500/10 transition-transform active:scale-95"
-                    >
-                      {index + 1}
-                      <div className="absolute -top-1 -right-1 w-4 h-4 bg-black border border-amber-500 rounded-full flex items-center justify-center">
-                        <svg className="w-2.5 h-2.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
-                          <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" />
-                        </svg>
-                      </div>
-                    </div>
-                  ))}
+                  {/* Entries List */}
+                  {tvEntries.map((entry) => {
+                    if (entry.isSeparator) {
+                      displayCounter = 0; // Reset counter for next group
+                      return (
+                        <div key={entry.id} className="col-span-3 flex items-center gap-2 py-1">
+                          <div className="h-[1px] flex-grow bg-amber-900/30"></div>
+                          <span className="text-[7px] font-black text-amber-900 uppercase tracking-widest whitespace-nowrap">Session Reset</span>
+                          <div className="h-[1px] flex-grow bg-amber-900/30"></div>
+                        </div>
+                      );
+                    }
 
-                  {/* The "Next Game" Interactive Box */}
-                  <button
-                    onClick={() => handleAddGame(tv.id, currentPrice)}
-                    className="aspect-square border-2 border-dashed border-amber-900/40 rounded-2xl flex flex-col items-center justify-center text-amber-900/60 hover:border-amber-500 hover:text-amber-500 hover:bg-amber-500/5 transition-all group"
-                  >
-                    <span className="text-3xl font-black leading-none">+</span>
-                    <span className="text-[8px] font-black uppercase mt-1 opacity-0 group-hover:opacity-100">Add Game</span>
-                  </button>
+                    displayCounter++;
+                    return (
+                      <div 
+                        key={entry.id} 
+                        className="aspect-square bg-amber-500 rounded-2xl flex items-center justify-center text-black font-black text-lg relative shadow-md shadow-amber-500/10 transition-transform active:scale-95"
+                      >
+                        {displayCounter}
+                        <div className="absolute -top-1 -right-1 w-4 h-4 bg-black border border-amber-500 rounded-full flex items-center justify-center">
+                          <svg className="w-2.5 h-2.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
+                            <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" />
+                          </svg>
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  {/* Controls */}
+                  <div className="col-span-3 grid grid-cols-2 gap-3 mt-1">
+                    <button
+                      onClick={() => handleAddGame(tv.id, currentPrice)}
+                      className="h-16 border-2 border-dashed border-amber-900/40 rounded-2xl flex flex-col items-center justify-center text-amber-900/60 hover:border-amber-500 hover:text-amber-500 hover:bg-amber-500/5 transition-all group"
+                    >
+                      <span className="text-2xl font-black leading-none">+</span>
+                      <span className="text-[8px] font-black uppercase mt-0.5">Add Game</span>
+                    </button>
+                    <button
+                      onClick={() => handleAddGame(tv.id, 0, true)}
+                      className="h-16 border-2 border-dashed border-amber-900/20 rounded-2xl flex flex-col items-center justify-center text-amber-900/40 hover:border-amber-700 hover:text-amber-700 hover:bg-amber-900/5 transition-all group"
+                    >
+                      <svg className="w-4 h-4 mb-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                      </svg>
+                      <span className="text-[8px] font-black uppercase">Separator</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             </div>
@@ -168,7 +196,7 @@ const WorkerApp: React.FC = () => {
       </div>
 
       <div className="flex-none py-3 text-center">
-        <p className="text-[8px] text-amber-900 font-black uppercase tracking-[0.5em]">Prices are fixed to a minimum standard and cannot be reduced</p>
+        <p className="text-[8px] text-amber-900 font-black uppercase tracking-[0.5em]">Game history can be grouped by inserting separators for different users</p>
       </div>
     </div>
   );

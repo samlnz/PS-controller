@@ -24,9 +24,10 @@
   <script type="importmap">
 {
   "imports": {
-    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
     "react/": "https://esm.sh/react@^19.2.4/",
     "react": "https://esm.sh/react@^19.2.4",
+    "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
+    "vite": "https://esm.sh/vite@^7.3.1",
     "recharts": "https://esm.sh/recharts@^3.7.0",
     "react-router-dom": "https://esm.sh/react-router-dom@^7.13.0"
   }
@@ -36,6 +37,7 @@
 </head>
   <body class="bg-black text-amber-50">
     <div id="root"></div>
-  <script type="module" src="/index.tsx"></script>
-</body>
+    <!-- Vite entry point -->
+    <script type="module" src="/index.tsx"></script>
+  </body>
 </html>

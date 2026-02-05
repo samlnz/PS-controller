@@ -78,19 +78,19 @@ const AdminDashboard: React.FC = () => {
   const stats = useMemo(() => {
     const totalRev = filteredGames.reduce((acc, g) => acc + g.amount, 0);
     
-    const house1Games = filteredGames.filter(g => 
+    const house1Entries = filteredGames.filter(g => 
       TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house1'
     );
-    const house2Games = filteredGames.filter(g => 
+    const house2Entries = filteredGames.filter(g => 
       TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house2'
     );
 
-    const house1Rev = house1Games.reduce((acc, g) => acc + g.amount, 0);
-    const house2Rev = house2Games.reduce((acc, g) => acc + g.amount, 0);
+    const house1Rev = house1Entries.reduce((acc, g) => acc + g.amount, 0);
+    const house2Rev = house2Entries.reduce((acc, g) => acc + g.amount, 0);
 
     const tvPerformance = TV_CONFIGS.map(tv => {
-      const gList = filteredGames.filter(g => g.tvId === tv.id);
-      const tvRevenue = gList.reduce((acc, curr) => acc + curr.amount, 0);
+      const gList = filteredGames.filter(g => g.tvId === tv.id && !g.isSeparator);
+      const tvRevenue = filteredGames.filter(g => g.tvId === tv.id).reduce((acc, curr) => acc + curr.amount, 0);
       const tvGamesCount = gList.length;
       
       return {
@@ -105,10 +105,10 @@ const AdminDashboard: React.FC = () => {
     });
 
     return {
-      totalGames: filteredGames.length,
+      totalGames: filteredGames.filter(g => !g.isSeparator).length,
       totalRevenue: totalRev,
-      house1: { games: house1Games.length, revenue: house1Rev },
-      house2: { games: house2Games.length, revenue: house2Rev },
+      house1: { games: house1Entries.filter(g => !g.isSeparator).length, revenue: house1Rev },
+      house2: { games: house2Entries.filter(g => !g.isSeparator).length, revenue: house2Rev },
       tvPerformance
     };
   }, [filteredGames]);
