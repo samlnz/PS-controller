@@ -7,10 +7,17 @@ export default defineConfig(({ mode }) => {
   return {
     define: {
       'process.env': {
-        ADMIN_PASSWORD: env.ADMIN_PASSWORD,
+        ADMIN_PASSWORD: env.ADMIN_PASSWORD || 'admin123',
         API_KEY: env.API_KEY,
-        BACKEND_URL: env.BACKEND_URL || ''
       }
+    },
+    server: {
+      proxy: {
+        '/api': {
+          target: 'http://localhost:3001',
+          changeOrigin: true,
+        },
+      },
     },
     build: {
       outDir: 'dist',

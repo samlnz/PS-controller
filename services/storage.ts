@@ -3,9 +3,11 @@ import { GameEntry } from '../types';
 
 const STORAGE_KEY = 'fifa_game_counter_data';
 const PRICES_KEY = 'fifa_tv_prices';
-const BACKEND_URL = (process.env as any).BACKEND_URL;
+// In Railway, the backend URL is usually the same origin if serving the build, 
+// or an environment variable. We'll use a relative path for API calls.
+const API_BASE = '/api';
 
-// Local helpers
+// Local storage is kept as a robust fallback for offline scenarios
 const getLocalGames = (): GameEntry[] => {
   const data = localStorage.getItem(STORAGE_KEY);
   return data ? JSON.parse(data) : [];
@@ -26,10 +28,8 @@ const setLocalPrices = (prices: Record<string, number>) => {
 
 // API Service
 export const getStoredGames = async (): Promise<GameEntry[]> => {
-  if (!BACKEND_URL) return getLocalGames();
-
   try {
-    const response = await fetch(`${BACKEND_URL}/games`, {
+    const response = await fetch(`${API_BASE}/games`, {
       headers: { 'Cache-Control': 'no-cache' }
     });
     if (response.ok) {
@@ -38,7 +38,7 @@ export const getStoredGames = async (): Promise<GameEntry[]> => {
       return remoteGames;
     }
   } catch (error) {
-    console.warn('Backend unreachable, using local data:', error);
+    console.warn('Backend unreachable, using local fallback:', error);
   }
   return getLocalGames();
 };
@@ -46,36 +46,32 @@ export const getStoredGames = async (): Promise<GameEntry[]> => {
 export const saveGames = async (games: GameEntry[]) => {
   setLocalGames(games);
   
-  if (!BACKEND_URL) return;
-
   try {
-    await fetch(`${BACKEND_URL}/games`, {
+    // We send the latest game entry or the full list depending on backend design.
+    // To keep it simple and robust, we sync the whole state.
+    await fetch(`${API_BASE}/games`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ games }),
     });
   } catch (error) {
-    console.error('Failed to sync games to backend:', error);
+    console.error('Failed to sync games to Railway:', error);
   }
 };
 
 export const clearAllData = async () => {
   localStorage.removeItem(STORAGE_KEY);
   
-  if (!BACKEND_URL) return;
-
   try {
-    await fetch(`${BACKEND_URL}/games`, { method: 'DELETE' });
+    await fetch(`${API_BASE}/games`, { method: 'DELETE' });
   } catch (error) {
-    console.error('Failed to clear backend data:', error);
+    console.error('Failed to clear Railway data:', error);
   }
 };
 
 export const getTVPrices = async (): Promise<Record<string, number>> => {
-  if (!BACKEND_URL) return getLocalPrices();
-
   try {
-    const response = await fetch(`${BACKEND_URL}/prices`);
+    const response = await fetch(`${API_BASE}/prices`);
     if (response.ok) {
       const remotePrices = await response.json();
       setLocalPrices(remotePrices);
@@ -90,15 +86,13 @@ export const getTVPrices = async (): Promise<Record<string, number>> => {
 export const saveTVPrices = async (prices: Record<string, number>) => {
   setLocalPrices(prices);
 
-  if (!BACKEND_URL) return;
-
   try {
-    await fetch(`${BACKEND_URL}/prices`, {
+    await fetch(`${API_BASE}/prices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prices }),
     });
   } catch (error) {
-    console.error('Failed to sync prices to backend:', error);
+    console.error('Failed to sync prices to Railway:', error);
   }
 };
