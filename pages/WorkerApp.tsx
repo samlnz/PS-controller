@@ -1,5 +1,5 @@
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
 import { GameEntry, HouseId } from '../types';
 import { getStoredGames, saveGames, getTVPrices, saveTVPrices } from '../services/storage';
@@ -65,10 +65,21 @@ const WorkerApp: React.FC = () => {
     await saveGames(updated);
   };
 
+  // Determine the start of the current business day (7:00 AM)
+  const businessDayStart = useMemo(() => {
+    const now = new Date();
+    const today7AM = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0, 0);
+    if (now.getHours() < 7) {
+      today7AM.setDate(today7AM.getDate() - 1);
+    }
+    return today7AM.getTime();
+  }, [games]); // Re-eval on sync
+
   const currentHouseTVs = TV_CONFIGS.filter(tv => tv.houseId === activeHouse);
   
   const getHouseStats = (houseId: HouseId) => {
     const houseEntries = games.filter(g => 
+      g.timestamp >= businessDayStart &&
       TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === houseId
     );
     const revenue = houseEntries.reduce((acc, curr) => acc + curr.amount, 0);
@@ -102,7 +113,7 @@ const WorkerApp: React.FC = () => {
 
         <div className="flex items-center gap-3">
           <div className="text-right">
-            <p className="text-[10px] text-amber-700 font-black uppercase tracking-tighter">Current Yield</p>
+            <p className="text-[10px] text-amber-700 font-black uppercase tracking-tighter">Current Yield (from 7 AM)</p>
             <p className="text-xl font-black text-amber-500 leading-none">{stats.revenue} <span className="text-[10px]">ETB</span></p>
           </div>
         </div>
@@ -111,7 +122,8 @@ const WorkerApp: React.FC = () => {
       {/* Vertical Grid Dividing Screen Equally */}
       <div className={`flex-grow grid ${gridCols} ${gridRows} gap-3 h-full`}>
         {currentHouseTVs.map((tv) => {
-          const tvEntries = games.filter(g => g.tvId === tv.id);
+          // Only show entries for the current business day
+          const tvEntries = games.filter(g => g.tvId === tv.id && g.timestamp >= businessDayStart);
           const currentPrice = getEffectivePrice(tv.id, tv.pricePerGame);
           
           let displayCounter = 0;

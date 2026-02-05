@@ -16,7 +16,6 @@ const AdminDashboard: React.FC = () => {
   const refreshData = async () => {
     const freshGames = await getStoredGames();
     setGames((prev) => {
-      // Deep compare or simple length check to update timestamp
       if (JSON.stringify(prev) !== JSON.stringify(freshGames)) {
         setLastUpdate(new Date().toLocaleTimeString());
         return freshGames;
@@ -28,16 +27,7 @@ const AdminDashboard: React.FC = () => {
   useEffect(() => {
     refreshData();
     const interval = setInterval(refreshData, 3000);
-    const handleStorageChange = (e: StorageEvent) => {
-      if (e.key === 'fifa_game_counter_data') {
-        refreshData();
-      }
-    };
-    window.addEventListener('storage', handleStorageChange);
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('storage', handleStorageChange);
-    };
+    return () => clearInterval(interval);
   }, []);
 
   const handleResetDay = async () => {
@@ -50,13 +40,23 @@ const AdminDashboard: React.FC = () => {
 
   const filteredGames = useMemo(() => {
     const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+    
+    // Business Day starts at 7:00 AM
+    const getStartOfBusinessDay = () => {
+      const today7AM = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0, 0);
+      if (now.getHours() < 7) {
+        today7AM.setDate(today7AM.getDate() - 1);
+      }
+      return today7AM.getTime();
+    };
+
+    const startOfBusinessDay = getStartOfBusinessDay();
     
     return games.filter(g => {
       if (!g.completed) return false;
 
       if (period === 'today') {
-        return g.timestamp >= startOfToday;
+        return g.timestamp >= startOfBusinessDay;
       }
       if (period === 'week') {
         const sevenDaysAgo = now.getTime() - (7 * 24 * 60 * 60 * 1000);
@@ -68,7 +68,7 @@ const AdminDashboard: React.FC = () => {
       }
       if (period === 'custom') {
         const targetDate = new Date(selectedDate);
-        const startOfSelectedDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate()).getTime();
+        const startOfSelectedDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 7, 0, 0, 0).getTime();
         const endOfSelectedDay = startOfSelectedDay + (24 * 60 * 60 * 1000);
         return g.timestamp >= startOfSelectedDay && g.timestamp < endOfSelectedDay;
       }
@@ -115,10 +115,10 @@ const AdminDashboard: React.FC = () => {
   }, [filteredGames]);
 
   const getPeriodLabel = () => {
-    if (period === 'today') return "Today's Performance";
+    if (period === 'today') return "Today's Performance (From 7:00 AM)";
     if (period === 'week') return "Weekly Performance (7D)";
     if (period === 'month') return "Monthly Performance";
-    return `Revenue for ${selectedDate}`;
+    return `Revenue for ${selectedDate} (7 AM Start)`;
   };
 
   const COLORS = ['#d97706', '#f59e0b', '#fbbf24', '#fcd34d', '#78350f', '#451a03', '#92400e'];
