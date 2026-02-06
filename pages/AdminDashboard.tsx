@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
 import { GameEntry, HouseId, HouseThresholds, VideoSession, VideoQuality } from '../types';
-import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession } from '../services/storage';
+import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession, getHouseStatus } from '../services/storage';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 
 type Period = 'today' | 'week' | 'month' | 'custom';
@@ -12,20 +12,20 @@ const AdminDashboard: React.FC = () => {
   const [period, setPeriod] = useState<Period>('today');
   const [thresholds, setThresholds] = useState<HouseThresholds>({ house1: 2, house2: 2 });
   const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
+  const [houseStatus, setHouseStatus] = useState<Record<string, boolean>>({ house1: false, house2: false });
   const [isObserving, setIsObserving] = useState(false);
-  const [hideOwnerFace, setHideOwnerFace] = useState(true);
-
-  const ownerVideoRef = useRef<HTMLVideoElement>(null);
 
   // Standard data refresh for general stats
   const refreshData = async () => {
-    const [freshGames, freshThresholds, freshVideo] = await Promise.all([
+    const [freshGames, freshThresholds, freshVideo, freshStatus] = await Promise.all([
       getStoredGames(),
       getThresholds(),
-      getVideoSession()
+      getVideoSession(),
+      getHouseStatus()
     ]);
     setGames(freshGames);
     setThresholds(freshThresholds);
+    setHouseStatus(freshStatus);
     
     if (freshVideo.status !== 'idle' && !isObserving) {
       setIsObserving(true);
@@ -54,22 +54,6 @@ const AdminDashboard: React.FC = () => {
       }, 150); 
     }
     return () => clearInterval(frameInterval);
-  }, [isObserving]);
-
-  // Handle Owner Presence Camera
-  useEffect(() => {
-    let stream: MediaStream | null = null;
-    if (isObserving) {
-      navigator.mediaDevices.getUserMedia({ video: true, audio: false })
-        .then(s => {
-          stream = s;
-          if (ownerVideoRef.current) ownerVideoRef.current.srcObject = s;
-        })
-        .catch(err => console.warn("Owner camera inactive:", err));
-    }
-    return () => {
-      if (stream) stream.getTracks().forEach(t => t.stop());
-    };
   }, [isObserving]);
 
   const handleRequestVideo = async (houseId: HouseId) => {
@@ -141,65 +125,56 @@ const AdminDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-700 pb-12">
-      {/* Observation Overlay */}
+      {/* Observation Overlay - Redesigned for Portrait Phone Feed */}
       {isObserving && (
-        <div className="fixed inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center p-4 sm:p-8 backdrop-blur-xl animate-in zoom-in duration-300">
-          <div className="w-full max-w-4xl aspect-video bg-zinc-900 rounded-[2rem] sm:rounded-[3rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/20">
+        <div className="fixed inset-0 z-[200] bg-black/98 flex flex-col items-center justify-center p-4 backdrop-blur-2xl animate-in zoom-in duration-300">
+          <div className="w-full max-w-[420px] aspect-[9/16] bg-zinc-900 rounded-[3.5rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/30">
             {videoSession.frame ? (
               <img src={videoSession.frame} className="w-full h-full object-cover animate-in fade-in duration-500" alt="Live Feed" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <div className="text-center">
-                  <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                  <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-6"></div>
                   <p className="text-amber-500 font-black uppercase tracking-widest text-[10px]">Syncing Encrypted Stream...</p>
-                  <p className="text-amber-800 text-[8px] font-bold uppercase tracking-[0.2em] mt-2">Waiting for Counter phone link...</p>
+                  <p className="text-amber-800 text-[8px] font-bold uppercase tracking-[0.2em] mt-3">Waiting for Counter phone link...</p>
                 </div>
               </div>
             )}
             
-            {/* Owner Presence Camera */}
-            <div className="absolute bottom-6 left-6 w-32 h-44 sm:w-40 sm:h-52 bg-black rounded-2xl border-2 border-amber-500/50 overflow-hidden shadow-2xl transition-all duration-500">
-              <video ref={ownerVideoRef} autoPlay muted playsInline className={`w-full h-full object-cover transition-all duration-700 ${hideOwnerFace ? 'blur-[40px] grayscale brightness-50' : ''}`} />
-              <div className="absolute inset-0 bg-gradient-to-t from-black/60 to-transparent pointer-events-none"></div>
-              <div className="absolute bottom-2 left-0 right-0 text-center">
-                 <span className="text-[8px] text-amber-500 font-black uppercase tracking-[0.2em]">{hideOwnerFace ? 'Identity Hidden' : 'Presence Visible'}</span>
-              </div>
-              <button 
-                onClick={() => setHideOwnerFace(!hideOwnerFace)}
-                className="absolute top-2 right-2 bg-black/60 p-1.5 rounded-lg border border-amber-500/30 text-[8px] text-amber-500 font-black uppercase hover:bg-amber-500 hover:text-black transition-colors"
-              >
-                {hideOwnerFace ? 'Reveal' : 'Hide'}
-              </button>
-            </div>
-
-            {/* Quality Controls */}
-            <div className="absolute bottom-6 right-6 flex flex-col gap-2">
-              <p className="text-[8px] text-amber-500 font-black uppercase tracking-widest text-right">Stream Quality</p>
-              <div className="flex bg-black/60 p-1 rounded-xl backdrop-blur-md border border-amber-500/30">
-                {(['low', 'medium', 'high'] as VideoQuality[]).map((q) => (
-                  <button 
-                    key={q} 
-                    onClick={() => handleUpdateQuality(q)}
-                    className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${videoSession.quality === q ? 'bg-amber-500 text-black' : 'text-amber-500 hover:bg-amber-500/10'}`}
-                  >
-                    {q}
-                  </button>
-                ))}
+            {/* Overlay Controls */}
+            <div className="absolute top-10 left-0 right-0 px-8 flex justify-between items-start pointer-events-none">
+              <div className="flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30 pointer-events-auto">
+                <span className={`w-2.5 h-2.5 rounded-full animate-pulse ${videoSession.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">
+                  {videoSession.status === 'active' ? 'LIVE' : 'SYNCING'} : {HOUSE_NAMES[videoSession.houseId || '']}
+                </span>
               </div>
             </div>
 
-            <div className="absolute top-8 left-8 flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30">
-              <span className={`w-2 h-2 rounded-full animate-pulse ${videoSession.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-              <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">
-                {videoSession.status === 'active' ? 'Live Floor Link' : 'Connecting Floor...'} : {HOUSE_NAMES[videoSession.houseId || '']}
-              </span>
+            {/* Bottom Controls */}
+            <div className="absolute bottom-12 left-0 right-0 px-8 flex flex-col gap-4">
+              <div className="flex flex-col gap-2">
+                <p className="text-[8px] text-amber-500/70 font-black uppercase tracking-widest text-center">Managed Bandwidth</p>
+                <div className="flex bg-black/70 p-1.5 rounded-2xl backdrop-blur-xl border border-amber-500/20">
+                  {(['low', 'medium', 'high'] as VideoQuality[]).map((q) => (
+                    <button 
+                      key={q} 
+                      onClick={() => handleUpdateQuality(q)}
+                      className={`flex-1 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${videoSession.quality === q ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-amber-500 hover:bg-amber-500/10'}`}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
+          
           <button 
             onClick={handleEndVideo} 
-            className="mt-8 px-12 py-4 bg-amber-500 hover:bg-amber-400 text-black font-black rounded-2xl uppercase tracking-[0.3em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
+            className="mt-10 w-full max-w-[320px] py-5 bg-amber-500 hover:bg-amber-400 text-black font-black rounded-2xl uppercase tracking-[0.4em] shadow-2xl shadow-amber-500/20 active:scale-95 transition-all text-xs"
           >
-            Terminate Session
+            End Session
           </button>
         </div>
       )}
@@ -220,6 +195,7 @@ const AdminDashboard: React.FC = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {(['house1', 'house2'] as HouseId[]).map((hId) => {
           const isUnderThreshold = hourlyStats[hId] < thresholds[hId];
+          const isOnline = houseStatus[hId];
           return (
             <div key={hId} className={`p-8 bg-zinc-900 border-2 ${isUnderThreshold ? 'border-red-600/50 shadow-[0_0_20px_rgba(220,38,38,0.1)]' : 'border-amber-900/20'} rounded-[2.5rem] relative overflow-hidden group transition-all duration-500`}>
               {isUnderThreshold && (
@@ -234,15 +210,23 @@ const AdminDashboard: React.FC = () => {
                   <p className="text-amber-700 text-[10px] font-black uppercase tracking-widest mb-1">{HOUSE_NAMES[hId]}</p>
                   <h3 className="text-4xl font-black text-amber-500 tracking-tighter">{stats[hId].revenue.toLocaleString()} <span className="text-xs uppercase ml-1">ETB</span></h3>
                 </div>
-                <button 
-                  onClick={() => handleRequestVideo(hId)} 
-                  className={`${isUnderThreshold ? 'bg-red-600 hover:bg-red-500' : 'bg-amber-500 hover:bg-amber-400'} text-black p-4 rounded-2xl shadow-lg transition-all active:scale-90 flex items-center justify-center`}
-                  title="Request Visual Link"
-                >
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                  </svg>
-                </button>
+                <div className="flex flex-col items-center gap-3">
+                  <button 
+                    onClick={() => handleRequestVideo(hId)} 
+                    className={`${isUnderThreshold ? 'bg-red-600 hover:bg-red-500' : 'bg-amber-500 hover:bg-amber-400'} text-black p-4 rounded-2xl shadow-lg transition-all active:scale-90 flex items-center justify-center`}
+                    title="Request Visual Link"
+                  >
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                    </svg>
+                  </button>
+                  <div className="flex items-center gap-1.5">
+                    <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-green-500 animate-pulse' : 'bg-zinc-700'}`}></span>
+                    <span className={`text-[8px] font-black uppercase tracking-widest ${isOnline ? 'text-green-500' : 'text-zinc-600'}`}>
+                       {isOnline ? 'Online' : 'Offline'}
+                    </span>
+                  </div>
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4 relative z-10">
                  <div className={`bg-black/40 p-4 rounded-2xl border ${isUnderThreshold ? 'border-red-900/40' : 'border-amber-900/10'}`}>

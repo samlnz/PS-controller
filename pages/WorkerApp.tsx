@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
 import { GameEntry, HouseId, VideoSession } from '../types';
-import { getStoredGames, saveGames, getTVPrices, getVideoSession, updateVideoSession, sendVideoFrame } from '../services/storage';
+import { getStoredGames, saveGames, getTVPrices, getVideoSession, updateVideoSession, sendVideoFrame, sendHeartbeat } from '../services/storage';
 
 const WorkerApp: React.FC = () => {
   const [games, setGames] = useState<GameEntry[]>([]);
@@ -10,6 +10,8 @@ const WorkerApp: React.FC = () => {
   const [customPrices, setCustomPrices] = useState<Record<string, number>>({});
   const [videoRequest, setVideoRequest] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
   const [isCapturing, setIsCapturing] = useState(false);
+  const [permissionError, setPermissionError] = useState<string | null>(null);
+  const [showMissedAlert, setShowMissedAlert] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -26,13 +28,28 @@ const WorkerApp: React.FC = () => {
     setGames(fetchedGames);
     setCustomPrices(fetchedPrices);
     setVideoRequest(fetchedVideo);
+
+    // If we just loaded and there is a request for our house, and we aren't capturing, show missed alert
+    if (fetchedVideo.status === 'requested' && fetchedVideo.houseId === activeHouse && !isCapturing) {
+        setShowMissedAlert(true);
+    }
   };
 
   useEffect(() => {
     loadData();
     const interval = setInterval(async () => {
+      // Send Heartbeat
+      sendHeartbeat(activeHouse);
+
       const refreshedVideo = await getVideoSession();
       setVideoRequest(refreshedVideo);
+      
+      // Detection for missed request while navigating
+      if (refreshedVideo.status === 'requested' && refreshedVideo.houseId === activeHouse && !isCapturing) {
+          setShowMissedAlert(true);
+      } else if (refreshedVideo.status === 'idle') {
+          setShowMissedAlert(false);
+      }
       
       const refreshedGames = await getStoredGames();
       setGames(prev => {
@@ -42,7 +59,7 @@ const WorkerApp: React.FC = () => {
       });
     }, 4000);
     return () => clearInterval(interval);
-  }, []);
+  }, [activeHouse]); // Re-start heartbeat loop if house changes
 
   const handleAddGame = (tvId: string, amount: number) => {
     const newGame: GameEntry = { 
@@ -76,7 +93,6 @@ const WorkerApp: React.FC = () => {
     });
   };
 
-  // Improved Frame Loop using Ref to avoid stale closures
   const frameLoop = async () => {
     if (!capturingRef.current || !videoRef.current || !canvasRef.current) return;
 
@@ -86,14 +102,13 @@ const WorkerApp: React.FC = () => {
       if (ctx) {
         isSendingFrame.current = true;
         
-        // Adaptive quality settings based on owner selection
         const quality = videoRequest.quality || 'medium';
-        let width = 480, height = 360, compression = 0.5, delay = 100;
+        let width = 360, height = 480, compression = 0.5, delay = 100;
 
         if (quality === 'low') {
-          width = 320; height = 240; compression = 0.2; delay = 200; // ~5 FPS
+          width = 240; height = 320; compression = 0.2; delay = 200;
         } else if (quality === 'high') {
-          width = 640; height = 480; compression = 0.8; delay = 60; // ~15 FPS
+          width = 480; height = 640; compression = 0.8; delay = 60;
         }
 
         canvasRef.current.width = width;
@@ -125,7 +140,6 @@ const WorkerApp: React.FC = () => {
     }
   }, [isCapturing]);
 
-  // Reliable stream attachment
   useEffect(() => {
     if (isCapturing && videoRef.current && activeStream.current) {
         const video = videoRef.current;
@@ -143,26 +157,35 @@ const WorkerApp: React.FC = () => {
   }, [isCapturing]);
 
   const startVideoFeed = async () => {
+    setPermissionError(null);
+    setShowMissedAlert(false);
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
             facingMode: { ideal: 'environment' }, 
-            width: { ideal: 640 }, 
-            height: { ideal: 480 } 
+            width: { ideal: 480 }, 
+            height: { ideal: 640 } 
         }, 
         audio: false 
       });
       activeStream.current = stream;
       setIsCapturing(true); 
-    } catch (e) {
-      alert("Camera authorization failed. Please allow camera access to show the shop environment.");
-      await updateVideoSession({ status: 'idle', houseId: null });
+    } catch (e: any) {
+      console.error("Camera access error:", e);
+      let errorMsg = "Unable to access the camera.";
+      if (e.name === 'NotAllowedError') {
+        errorMsg = "Camera access was denied. Please check your browser settings and enable camera permissions for this site.";
+      } else if (e.name === 'NotFoundError') {
+        errorMsg = "No camera found on this device.";
+      }
+      setPermissionError(errorMsg);
     }
   };
 
   const handleStopVideo = async () => {
     setIsCapturing(false);
     capturingRef.current = false;
+    setPermissionError(null);
     if (activeStream.current) {
       activeStream.current.getTracks().forEach(t => t.stop());
       activeStream.current = null;
@@ -171,6 +194,12 @@ const WorkerApp: React.FC = () => {
         videoRef.current.srcObject = null;
     }
     await updateVideoSession({ status: 'idle', houseId: null, frame: undefined });
+  };
+
+  const handleDeclineRequest = async () => {
+    await updateVideoSession({ status: 'idle', houseId: null });
+    setPermissionError(null);
+    setShowMissedAlert(false);
   };
 
   useEffect(() => {
@@ -193,22 +222,93 @@ const WorkerApp: React.FC = () => {
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)] max-w-5xl mx-auto relative animate-in fade-in duration-500">
-      {videoRequest.status === 'requested' && videoRequest.houseId === activeHouse && (
+      {/* Missed Request Alert */}
+      {showMissedAlert && !isCapturing && (
+        <div className="fixed top-20 left-4 right-4 z-[150] bg-amber-500 rounded-2xl p-4 shadow-2xl flex items-center justify-between animate-in slide-in-from-top-4 duration-500 border border-black/10">
+           <div className="flex items-center gap-3">
+             <div className="w-10 h-10 bg-black/10 rounded-full flex items-center justify-center animate-pulse">
+                <svg className="w-6 h-6 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                </svg>
+             </div>
+             <div>
+               <p className="text-[10px] font-black uppercase tracking-widest text-black/60">Missed Observation</p>
+               <p className="text-sm font-black text-black">Owner is requesting feed</p>
+             </div>
+           </div>
+           <button 
+             onClick={startVideoFeed}
+             className="bg-black text-amber-500 px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all shadow-lg"
+           >
+             Monitor Now
+           </button>
+        </div>
+      )}
+
+      {videoRequest.status === 'requested' && videoRequest.houseId === activeHouse && !showMissedAlert && (
         <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 backdrop-blur-xl">
           <div className="w-full max-w-sm bg-zinc-950 border border-amber-500 rounded-[3rem] p-10 text-center shadow-2xl shadow-amber-500/20">
-            <div className="w-20 h-20 bg-amber-500 rounded-[2rem] flex items-center justify-center mx-auto mb-8 animate-bounce shadow-lg shadow-amber-500/40">
-               <svg className="w-10 h-10 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-               </svg>
-            </div>
-            <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4">Observation Request</h2>
-            <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] mb-10 leading-relaxed">The Owner is requesting a secure visual link to the floor.</p>
-            <button 
-              onClick={startVideoFeed} 
-              className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-5 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
-            >
-              Initialize Link
-            </button>
+            {permissionError ? (
+              <div className="animate-in fade-in zoom-in duration-300">
+                <div className="w-20 h-20 bg-red-600 rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-lg shadow-red-600/40">
+                  <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+                  </svg>
+                </div>
+                <h2 className="text-xl font-black text-red-500 uppercase tracking-tighter mb-4">Permission Denied</h2>
+                <p className="text-zinc-400 text-xs font-medium mb-8 leading-relaxed">
+                  {permissionError}
+                  <br /><br />
+                  <span className="text-amber-500">Guide:</span> Click the <span className="font-bold">lock icon</span> in your browser's address bar to reset camera permissions, then try again.
+                </p>
+                <div className="space-y-3">
+                  <button 
+                    onClick={startVideoFeed} 
+                    className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-4 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
+                  >
+                    Try Again
+                  </button>
+                  <button 
+                    onClick={handleDeclineRequest}
+                    className="w-full bg-zinc-900 border border-amber-900/30 text-amber-900 font-black py-4 rounded-2xl uppercase tracking-[0.1em] hover:text-amber-700 transition-all"
+                  >
+                    Close
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="animate-in fade-in zoom-in duration-300">
+                <div className="w-20 h-20 bg-amber-500 rounded-[2rem] flex items-center justify-center mx-auto mb-8 animate-bounce shadow-lg shadow-amber-500/40">
+                   <svg className="w-10 h-10 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                   </svg>
+                </div>
+                <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4">Observation Request</h2>
+                <div className="mb-10 space-y-4">
+                  <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] leading-relaxed">The Owner is requesting a secure visual link to the floor.</p>
+                  <div className="bg-amber-500/5 border border-amber-500/10 rounded-2xl p-4 text-left">
+                    <p className="text-[9px] text-amber-500/60 font-black uppercase tracking-widest mb-2">Why camera access?</p>
+                    <p className="text-[11px] text-zinc-400 leading-relaxed">
+                      We use your phone's <span className="text-amber-500">rear camera</span> to provide the owner with a real-time view of the shop environment. This helps maintain security and manage the floor effectively.
+                    </p>
+                  </div>
+                </div>
+                <div className="space-y-3">
+                  <button 
+                    onClick={startVideoFeed} 
+                    className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-5 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
+                  >
+                    Initialize Link
+                  </button>
+                  <button 
+                    onClick={handleDeclineRequest}
+                    className="w-full bg-transparent text-amber-900 font-black py-2 text-[10px] uppercase tracking-[0.2em] hover:text-amber-700 transition-all"
+                  >
+                    Decline Request
+                  </button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -234,7 +334,6 @@ const WorkerApp: React.FC = () => {
         </div>
       )}
 
-      {/* Counter Header */}
       <div className="flex-none flex items-center justify-between mb-6 px-2">
         <div className="flex p-1 bg-zinc-900 border border-amber-900/30 rounded-2xl shadow-lg">
           {(['house1', 'house2'] as HouseId[]).map((hId) => (
@@ -253,7 +352,6 @@ const WorkerApp: React.FC = () => {
         </div>
       </div>
 
-      {/* TV Grid with Instant Counter Feedback */}
       <div className="flex-grow grid grid-cols-2 gap-4 h-full pb-6 overflow-y-auto custom-scrollbar">
         {currentHouseTVs.map((tv) => {
           const tvEntries = games.filter(g => g.tvId === tv.id && g.timestamp >= dayStart);

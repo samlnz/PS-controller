@@ -122,6 +122,24 @@ export const saveThresholds = async (thresholds: HouseThresholds) => {
   } catch (e) {}
 };
 
+export const getHouseStatus = async (): Promise<Record<string, boolean>> => {
+  try {
+    const response = await fetch(`${API_BASE}/house-status`);
+    if (response.ok) return await response.json();
+  } catch (e) {}
+  return { house1: false, house2: false };
+};
+
+export const sendHeartbeat = async (houseId: string) => {
+  try {
+    await fetch(`${API_BASE}/heartbeat`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ houseId }),
+    });
+  } catch (e) {}
+};
+
 export const getVideoSession = async (): Promise<VideoSession> => {
   try {
     const response = await fetch(`${API_BASE}/video-session`);

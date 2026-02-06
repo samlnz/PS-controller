@@ -16,7 +16,8 @@ app.use(express.static(path.join(__dirname, 'dist')));
 let games = [];
 let prices = {};
 let thresholds = { house1: 2, house2: 2 };
-let videoSession = { houseId: null, status: 'idle', frame: null };
+let videoSession = { houseId: null, status: 'idle', frame: null, quality: 'medium' };
+let houseHeartbeats = { house1: 0, house2: 0 };
 
 app.get('/api/games', (req, res) => res.json(games));
 app.post('/api/games', (req, res) => {
@@ -46,6 +47,26 @@ app.get('/api/thresholds', (req, res) => res.json(thresholds));
 app.post('/api/thresholds', (req, res) => {
   thresholds = { ...thresholds, ...req.body };
   res.status(200).json(thresholds);
+});
+
+// Heartbeat for status
+app.post('/api/heartbeat', (req, res) => {
+  const { houseId } = req.body;
+  if (houseId && houseHeartbeats[houseId] !== undefined) {
+    houseHeartbeats[houseId] = Date.now();
+    res.status(200).json({ success: true });
+  } else {
+    res.status(400).json({ error: 'Invalid houseId' });
+  }
+});
+
+app.get('/api/house-status', (req, res) => {
+  const now = Date.now();
+  const status = {
+    house1: (now - houseHeartbeats.house1) < 10000,
+    house2: (now - houseHeartbeats.house2) < 10000
+  };
+  res.json(status);
 });
 
 app.get('/api/video-session', (req, res) => res.json(videoSession));
