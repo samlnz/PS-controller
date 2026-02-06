@@ -1,9 +1,8 @@
 
-import { GameEntry, VideoSession, HouseThresholds } from '../types';
+import { GameEntry, VideoSession, HouseThresholds, SessionEvent } from '../types';
 
 const STORAGE_KEY = 'fifa_game_counter_data';
 const PRICES_KEY = 'fifa_tv_prices';
-const THRESHOLDS_KEY = 'fifa_house_thresholds';
 const API_BASE = '/api';
 
 const getLocalGames = (): GameEntry[] => {
@@ -103,7 +102,6 @@ export const saveTVPrices = async (prices: Record<string, number>) => {
   } catch (error) {}
 };
 
-// Video & Threshold Services
 export const getThresholds = async (): Promise<HouseThresholds> => {
   try {
     const response = await fetch(`${API_BASE}/thresholds`);
@@ -166,4 +164,22 @@ export const sendVideoFrame = async (frame: string) => {
       body: JSON.stringify({ frame }),
     });
   } catch (e) {}
+};
+
+export const recordEvent = async (type: 'yield_alert', houseId: string) => {
+  try {
+    await fetch(`${API_BASE}/events`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type, houseId }),
+    });
+  } catch (e) {}
+};
+
+export const getEvents = async (): Promise<SessionEvent[]> => {
+  try {
+    const response = await fetch(`${API_BASE}/events`);
+    if (response.ok) return await response.json();
+  } catch (e) {}
+  return [];
 };

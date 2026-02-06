@@ -9,15 +9,22 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Increase limit for base64 frames
 app.use(express.json({ limit: '5mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
 let games = [];
 let prices = {};
 let thresholds = { house1: 2, house2: 2 };
-let videoSession = { houseId: null, status: 'idle', frame: null, quality: 'medium' };
+let videoSession = { 
+  houseId: null, 
+  status: 'idle', 
+  frame: null, 
+  quality: 'medium',
+  lastRequestTime: 0,
+  lastOnlineSignalTime: 0
+};
 let houseHeartbeats = { house1: 0, house2: 0 };
+let events = [];
 
 app.get('/api/games', (req, res) => res.json(games));
 app.post('/api/games', (req, res) => {
@@ -49,7 +56,6 @@ app.post('/api/thresholds', (req, res) => {
   res.status(200).json(thresholds);
 });
 
-// Heartbeat for status
 app.post('/api/heartbeat', (req, res) => {
   const { houseId } = req.body;
   if (houseId && houseHeartbeats[houseId] !== undefined) {
@@ -71,9 +77,47 @@ app.get('/api/house-status', (req, res) => {
 
 app.get('/api/video-session', (req, res) => res.json(videoSession));
 app.post('/api/video-session', (req, res) => {
+  const oldSession = { ...videoSession };
   videoSession = { ...videoSession, ...req.body };
+  
+  // Record video request event
+  if (req.body.status === 'requested' && oldSession.status !== 'requested') {
+    videoSession.lastRequestTime = Date.now();
+    events.push({
+      id: Math.random().toString(36).substr(2, 9),
+      type: 'video_request',
+      houseId: videoSession.houseId,
+      timestamp: Date.now()
+    });
+  }
+
+  // Record online signal
+  if (req.body.lastOnlineSignalTime && req.body.lastOnlineSignalTime !== oldSession.lastOnlineSignalTime) {
+    events.push({
+      id: Math.random().toString(36).substr(2, 9),
+      type: 'counter_online',
+      houseId: req.body.houseId,
+      timestamp: Date.now()
+    });
+  }
+
   res.status(200).json(videoSession);
 });
+
+app.post('/api/events', (req, res) => {
+  const { type, houseId } = req.body;
+  if (type === 'yield_alert') {
+    events.push({
+      id: Math.random().toString(36).substr(2, 9),
+      type,
+      houseId,
+      timestamp: Date.now()
+    });
+  }
+  res.status(200).json({ success: true });
+});
+
+app.get('/api/events', (req, res) => res.json(events.slice(-50)));
 
 app.post('/api/video-frame', (req, res) => {
   videoSession.frame = req.body.frame;

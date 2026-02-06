@@ -18,16 +18,11 @@ export interface GameEntry {
   isSeparator?: boolean;
 }
 
-export interface HouseStats {
+export interface SessionEvent {
+  id: string;
+  type: 'video_request' | 'yield_alert' | 'counter_online';
   houseId: HouseId;
-  totalGames: number;
-  totalRevenue: number;
-}
-
-export interface GlobalStats {
-  totalGames: number;
-  totalRevenue: number;
-  houses: HouseStats[];
+  timestamp: number;
 }
 
 export interface VideoSession {
@@ -35,6 +30,8 @@ export interface VideoSession {
   status: 'idle' | 'requested' | 'active';
   frame?: string;
   quality?: VideoQuality;
+  lastRequestTime?: number;
+  lastOnlineSignalTime?: number;
 }
 
 export interface HouseThresholds {

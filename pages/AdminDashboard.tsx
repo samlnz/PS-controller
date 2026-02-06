@@ -1,9 +1,9 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
-import { GameEntry, HouseId, HouseThresholds, VideoSession, VideoQuality } from '../types';
-import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession, getHouseStatus } from '../services/storage';
-import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
+import { GameEntry, HouseId, HouseThresholds, VideoSession, VideoQuality, SessionEvent } from '../types';
+import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession, getHouseStatus, recordEvent } from '../services/storage';
+import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 type Period = 'today' | 'week' | 'month' | 'custom';
 
@@ -14,8 +14,16 @@ const AdminDashboard: React.FC = () => {
   const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
   const [houseStatus, setHouseStatus] = useState<Record<string, boolean>>({ house1: false, house2: false });
   const [isObserving, setIsObserving] = useState(false);
+  
+  const lastOnlineSignalRef = useRef<number>(0);
+  const alertedHousesRef = useRef<Record<string, boolean>>({});
 
-  // Standard data refresh for general stats
+  const notify = () => {
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
+    audio.play().catch(() => {});
+  };
+
   const refreshData = async () => {
     const [freshGames, freshThresholds, freshVideo, freshStatus] = await Promise.all([
       getStoredGames(),
@@ -27,6 +35,15 @@ const AdminDashboard: React.FC = () => {
     setThresholds(freshThresholds);
     setHouseStatus(freshStatus);
     
+    // Notification for Counter Online Signal
+    if (freshVideo.lastOnlineSignalTime && freshVideo.lastOnlineSignalTime > lastOnlineSignalRef.current) {
+      if (lastOnlineSignalRef.current !== 0) {
+        notify();
+        // Visual indicator could be added here, but the vibration/sound handles the alert.
+      }
+      lastOnlineSignalRef.current = freshVideo.lastOnlineSignalTime;
+    }
+
     if (freshVideo.status !== 'idle' && !isObserving) {
       setIsObserving(true);
     }
@@ -38,7 +55,6 @@ const AdminDashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, [isObserving]);
 
-  // High-frequency frame polling only when active
   useEffect(() => {
     let frameInterval: number;
     if (isObserving) {
@@ -57,7 +73,7 @@ const AdminDashboard: React.FC = () => {
   }, [isObserving]);
 
   const handleRequestVideo = async (houseId: HouseId) => {
-    const initialSession: VideoSession = { houseId, status: 'requested', frame: undefined, quality: 'medium' };
+    const initialSession: VideoSession = { houseId, status: 'requested', frame: undefined, quality: videoSession.quality || 'medium' };
     setVideoSession(initialSession);
     await updateVideoSession(initialSession);
     setIsObserving(true);
@@ -77,8 +93,22 @@ const AdminDashboard: React.FC = () => {
     const oneHourAgo = Date.now() - 3600000;
     const h1 = games.filter(g => g.timestamp >= oneHourAgo && !g.isSeparator && TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house1').length;
     const h2 = games.filter(g => g.timestamp >= oneHourAgo && !g.isSeparator && TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house2').length;
+    
+    // Trigger Alerts for Low Yield
+    ['house1', 'house2'].forEach((hId) => {
+      const val = hId === 'house1' ? h1 : h2;
+      const thresh = thresholds[hId as HouseId];
+      if (val < thresh && !alertedHousesRef.current[hId]) {
+        notify();
+        recordEvent('yield_alert', hId);
+        alertedHousesRef.current[hId] = true;
+      } else if (val >= thresh) {
+        alertedHousesRef.current[hId] = false;
+      }
+    });
+
     return { house1: h1, house2: h2 };
-  }, [games]);
+  }, [games, thresholds]);
 
   const recentActivity = useMemo(() => {
     return [...games]
@@ -125,7 +155,6 @@ const AdminDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-700 pb-12">
-      {/* Observation Overlay - Redesigned for Portrait Phone Feed */}
       {isObserving && (
         <div className="fixed inset-0 z-[200] bg-black/98 flex flex-col items-center justify-center p-4 backdrop-blur-2xl animate-in zoom-in duration-300">
           <div className="w-full max-w-[420px] aspect-[9/16] bg-zinc-900 rounded-[3.5rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/30">
@@ -141,7 +170,6 @@ const AdminDashboard: React.FC = () => {
               </div>
             )}
             
-            {/* Overlay Controls */}
             <div className="absolute top-10 left-0 right-0 px-8 flex justify-between items-start pointer-events-none">
               <div className="flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30 pointer-events-auto">
                 <span className={`w-2.5 h-2.5 rounded-full animate-pulse ${videoSession.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></span>
@@ -151,7 +179,6 @@ const AdminDashboard: React.FC = () => {
               </div>
             </div>
 
-            {/* Bottom Controls */}
             <div className="absolute bottom-12 left-0 right-0 px-8 flex flex-col gap-4">
               <div className="flex flex-col gap-2">
                 <p className="text-[8px] text-amber-500/70 font-black uppercase tracking-widest text-center">Managed Bandwidth</p>
@@ -179,7 +206,6 @@ const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Dashboard Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
            <h2 className="text-3xl font-black text-amber-500 uppercase tracking-tighter">Owner Dashboard</h2>
@@ -251,11 +277,10 @@ const AdminDashboard: React.FC = () => {
         })}
       </div>
 
-      {/* Grouped Detailed Activity Log */}
       <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem]">
         <div className="flex justify-between items-center mb-8">
-           <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest">Recent Detailed Transactions</h4>
-           <span className="text-[8px] text-amber-800 font-black uppercase">Live Updates Active</span>
+           <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest">Recent Activity</h4>
+           <span className="text-[8px] text-amber-800 font-black uppercase">Live Logs</span>
         </div>
         <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
           {recentActivity.map(game => {
@@ -284,7 +309,7 @@ const AdminDashboard: React.FC = () => {
       </div>
 
       <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem] h-96">
-        <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8 text-center">Revenue distribution by Asset</h4>
+        <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8 text-center">Asset Revenue</h4>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={stats.tvPerformance} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
             <XAxis dataKey="name" stroke="#78350f" fontSize={10} axisLine={false} tickLine={false} />

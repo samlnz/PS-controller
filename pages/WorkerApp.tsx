@@ -13,6 +13,7 @@ const WorkerApp: React.FC = () => {
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [showMissedAlert, setShowMissedAlert] = useState(false);
   
+  const lastAcknowledgedRequestRef = useRef<number>(parseInt(localStorage.getItem('fifa_last_ack_request') || '0'));
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isSendingFrame = useRef(false);
@@ -29,25 +30,28 @@ const WorkerApp: React.FC = () => {
     setCustomPrices(fetchedPrices);
     setVideoRequest(fetchedVideo);
 
-    // If we just loaded and there is a request for our house, and we aren't capturing, show missed alert
-    if (fetchedVideo.status === 'requested' && fetchedVideo.houseId === activeHouse && !isCapturing) {
-        setShowMissedAlert(true);
+    // Initial missed alert check
+    if (fetchedVideo.lastRequestTime && fetchedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && fetchedVideo.houseId === activeHouse) {
+      setShowMissedAlert(true);
     }
   };
 
   useEffect(() => {
     loadData();
     const interval = setInterval(async () => {
-      // Send Heartbeat
       sendHeartbeat(activeHouse);
 
       const refreshedVideo = await getVideoSession();
       setVideoRequest(refreshedVideo);
       
-      // Detection for missed request while navigating
-      if (refreshedVideo.status === 'requested' && refreshedVideo.houseId === activeHouse && !isCapturing) {
+      // Missed Request Persistence logic
+      // Show alert if lastRequestTime is newer than acknowledged time AND it targets this house
+      if (refreshedVideo.lastRequestTime && 
+          refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && 
+          refreshedVideo.houseId === activeHouse && 
+          !isCapturing) {
           setShowMissedAlert(true);
-      } else if (refreshedVideo.status === 'idle') {
+      } else if (refreshedVideo.status === 'idle' && !refreshedVideo.lastRequestTime) {
           setShowMissedAlert(false);
       }
       
@@ -59,7 +63,7 @@ const WorkerApp: React.FC = () => {
       });
     }, 4000);
     return () => clearInterval(interval);
-  }, [activeHouse]); // Re-start heartbeat loop if house changes
+  }, [activeHouse, isCapturing]);
 
   const handleAddGame = (tvId: string, amount: number) => {
     const newGame: GameEntry = { 
@@ -159,6 +163,19 @@ const WorkerApp: React.FC = () => {
   const startVideoFeed = async () => {
     setPermissionError(null);
     setShowMissedAlert(false);
+
+    // Record acknowledgement
+    if (videoRequest.lastRequestTime) {
+      lastAcknowledgedRequestRef.current = videoRequest.lastRequestTime;
+      localStorage.setItem('fifa_last_ack_request', lastAcknowledgedRequestRef.current.toString());
+    }
+
+    // Trigger notification to owner that counter is online
+    await updateVideoSession({ 
+      lastOnlineSignalTime: Date.now(),
+      houseId: activeHouse
+    });
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
         video: { 
@@ -174,37 +191,26 @@ const WorkerApp: React.FC = () => {
       console.error("Camera access error:", e);
       let errorMsg = "Unable to access the camera.";
       if (e.name === 'NotAllowedError') {
-        errorMsg = "Camera access was denied. Please check your browser settings and enable camera permissions for this site.";
-      } else if (e.name === 'NotFoundError') {
-        errorMsg = "No camera found on this device.";
+        errorMsg = "Camera access denied. Enable permissions in settings.";
       }
       setPermissionError(errorMsg);
     }
   };
 
-  const handleStopVideo = async () => {
+  // Only the owner can end the session, but the worker can hide their local view if idle
+  const handleStopLocalView = async () => {
     setIsCapturing(false);
     capturingRef.current = false;
-    setPermissionError(null);
     if (activeStream.current) {
       activeStream.current.getTracks().forEach(t => t.stop());
       activeStream.current = null;
     }
-    if (videoRef.current) {
-        videoRef.current.srcObject = null;
-    }
-    await updateVideoSession({ status: 'idle', houseId: null, frame: undefined });
   };
 
-  const handleDeclineRequest = async () => {
-    await updateVideoSession({ status: 'idle', houseId: null });
-    setPermissionError(null);
-    setShowMissedAlert(false);
-  };
-
+  // If owner ends session, worker stops capturing automatically
   useEffect(() => {
     if (videoRequest.status === 'idle' && isCapturing) {
-      handleStopVideo();
+      handleStopLocalView();
     }
   }, [videoRequest.status]);
 
@@ -222,7 +228,6 @@ const WorkerApp: React.FC = () => {
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)] max-w-5xl mx-auto relative animate-in fade-in duration-500">
-      {/* Missed Request Alert */}
       {showMissedAlert && !isCapturing && (
         <div className="fixed top-20 left-4 right-4 z-[150] bg-amber-500 rounded-2xl p-4 shadow-2xl flex items-center justify-between animate-in slide-in-from-top-4 duration-500 border border-black/10">
            <div className="flex items-center gap-3">
@@ -232,8 +237,8 @@ const WorkerApp: React.FC = () => {
                 </svg>
              </div>
              <div>
-               <p className="text-[10px] font-black uppercase tracking-widest text-black/60">Missed Observation</p>
-               <p className="text-sm font-black text-black">Owner is requesting feed</p>
+               <p className="text-[10px] font-black uppercase tracking-widest text-black/60">Missed Request</p>
+               <p className="text-sm font-black text-black">Notify Owner</p>
              </div>
            </div>
            <button 
@@ -245,70 +250,17 @@ const WorkerApp: React.FC = () => {
         </div>
       )}
 
-      {videoRequest.status === 'requested' && videoRequest.houseId === activeHouse && !showMissedAlert && (
+      {videoRequest.status === 'requested' && videoRequest.houseId === activeHouse && !isCapturing && (
         <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 backdrop-blur-xl">
           <div className="w-full max-w-sm bg-zinc-950 border border-amber-500 rounded-[3rem] p-10 text-center shadow-2xl shadow-amber-500/20">
-            {permissionError ? (
-              <div className="animate-in fade-in zoom-in duration-300">
-                <div className="w-20 h-20 bg-red-600 rounded-[2rem] flex items-center justify-center mx-auto mb-8 shadow-lg shadow-red-600/40">
-                  <svg className="w-10 h-10 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
-                  </svg>
-                </div>
-                <h2 className="text-xl font-black text-red-500 uppercase tracking-tighter mb-4">Permission Denied</h2>
-                <p className="text-zinc-400 text-xs font-medium mb-8 leading-relaxed">
-                  {permissionError}
-                  <br /><br />
-                  <span className="text-amber-500">Guide:</span> Click the <span className="font-bold">lock icon</span> in your browser's address bar to reset camera permissions, then try again.
-                </p>
-                <div className="space-y-3">
-                  <button 
-                    onClick={startVideoFeed} 
-                    className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-4 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
-                  >
-                    Try Again
-                  </button>
-                  <button 
-                    onClick={handleDeclineRequest}
-                    className="w-full bg-zinc-900 border border-amber-900/30 text-amber-900 font-black py-4 rounded-2xl uppercase tracking-[0.1em] hover:text-amber-700 transition-all"
-                  >
-                    Close
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <div className="animate-in fade-in zoom-in duration-300">
-                <div className="w-20 h-20 bg-amber-500 rounded-[2rem] flex items-center justify-center mx-auto mb-8 animate-bounce shadow-lg shadow-amber-500/40">
-                   <svg className="w-10 h-10 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
-                   </svg>
-                </div>
-                <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4">Observation Request</h2>
-                <div className="mb-10 space-y-4">
-                  <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] leading-relaxed">The Owner is requesting a secure visual link to the floor.</p>
-                  <div className="bg-amber-500/5 border border-amber-500/10 rounded-2xl p-4 text-left">
-                    <p className="text-[9px] text-amber-500/60 font-black uppercase tracking-widest mb-2">Why camera access?</p>
-                    <p className="text-[11px] text-zinc-400 leading-relaxed">
-                      We use your phone's <span className="text-amber-500">rear camera</span> to provide the owner with a real-time view of the shop environment. This helps maintain security and manage the floor effectively.
-                    </p>
-                  </div>
-                </div>
-                <div className="space-y-3">
-                  <button 
-                    onClick={startVideoFeed} 
-                    className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-5 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
-                  >
-                    Initialize Link
-                  </button>
-                  <button 
-                    onClick={handleDeclineRequest}
-                    className="w-full bg-transparent text-amber-900 font-black py-2 text-[10px] uppercase tracking-[0.2em] hover:text-amber-700 transition-all"
-                  >
-                    Decline Request
-                  </button>
-                </div>
-              </div>
-            )}
+            <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4">Observation Request</h2>
+            <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] mb-10">Live Floor Sync Requested</p>
+            <button 
+              onClick={startVideoFeed} 
+              className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-5 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
+            >
+              Start Stream
+            </button>
           </div>
         </div>
       )}
@@ -321,16 +273,10 @@ const WorkerApp: React.FC = () => {
             <div className="w-32 h-32 border-4 border-amber-500 rounded-full flex items-center justify-center mx-auto mb-10 shadow-[0_0_50px_rgba(245,158,11,0.3)] animate-pulse">
               <div className="w-6 h-6 bg-red-600 rounded-full shadow-[0_0_15px_#dc2626]"></div>
             </div>
-            <h1 className="text-4xl font-black text-amber-500 uppercase tracking-[0.4em] mb-4">Live Monitoring</h1>
-            <p className="text-amber-900 text-[10px] font-black uppercase tracking-[1em] animate-pulse">Connection Secured • E2E Encrypted</p>
-            <p className="text-amber-700 text-[8px] font-black uppercase tracking-widest mt-2">Mode: {videoRequest.quality || 'medium'} quality</p>
+            <h1 className="text-4xl font-black text-amber-500 uppercase tracking-[0.4em] mb-4">Live Floor</h1>
+            <p className="text-amber-900 text-[10px] font-black uppercase tracking-[1em] animate-pulse">Stream Active</p>
           </div>
-          <button 
-            onClick={handleStopVideo} 
-            className="absolute bottom-16 px-12 py-4 bg-zinc-900 border-2 border-amber-900/50 text-amber-800 font-black text-[10px] uppercase tracking-[0.3em] rounded-2xl hover:border-amber-500 hover:text-amber-500 transition-all active:scale-95"
-          >
-            End Stream
-          </button>
+          <p className="absolute bottom-12 text-zinc-700 text-[10px] font-black uppercase">Owner Controlled Session</p>
         </div>
       )}
 
@@ -347,7 +293,7 @@ const WorkerApp: React.FC = () => {
           ))}
         </div>
         <div className="text-right">
-          <p className="text-[10px] text-amber-800 font-black uppercase tracking-widest">Floor Yield</p>
+          <p className="text-[10px] text-amber-800 font-black uppercase tracking-widest">Yield</p>
           <p className="text-2xl font-black text-amber-500 tracking-tighter">{hStats.revenue.toLocaleString()} <span className="text-xs">ETB</span></p>
         </div>
       </div>
@@ -385,7 +331,7 @@ const WorkerApp: React.FC = () => {
                       onClick={() => handleAddSeparator(tv.id)} 
                       className="h-16 border-2 border-dashed border-amber-900/20 rounded-2xl text-[9px] font-black text-amber-900 hover:text-amber-700 hover:border-amber-700 uppercase tracking-widest transition-all"
                     >
-                      Reset
+                      R
                     </button>
                   </div>
                 </div>
