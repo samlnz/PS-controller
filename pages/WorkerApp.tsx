@@ -8,7 +8,7 @@ const WorkerApp: React.FC = () => {
   const [games, setGames] = useState<GameEntry[]>([]);
   const [activeHouse, setActiveHouse] = useState<HouseId>('house1');
   const [customPrices, setCustomPrices] = useState<Record<string, number>>({});
-  const [videoRequest, setVideoRequest] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
+  const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
   const [isCapturing, setIsCapturing] = useState(false);
   const [permissionError, setPermissionError] = useState<string | null>(null);
   const [showMissedAlert, setShowMissedAlert] = useState(false);
@@ -28,9 +28,9 @@ const WorkerApp: React.FC = () => {
     ]);
     setGames(fetchedGames);
     setCustomPrices(fetchedPrices);
-    setVideoRequest(fetchedVideo);
+    setVideoSession(fetchedVideo);
 
-    // Initial missed alert check
+    // Initial missed alert check based on persistent request timestamp
     if (fetchedVideo.lastRequestTime && fetchedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && fetchedVideo.houseId === activeHouse) {
       setShowMissedAlert(true);
     }
@@ -42,17 +42,15 @@ const WorkerApp: React.FC = () => {
       sendHeartbeat(activeHouse);
 
       const refreshedVideo = await getVideoSession();
-      setVideoRequest(refreshedVideo);
+      setVideoSession(refreshedVideo);
       
-      // Missed Request Persistence logic
-      // Show alert if lastRequestTime is newer than acknowledged time AND it targets this house
+      // PERSISTENT MISSED REQUEST LOGIC
+      // Alert remains even if owner ends the active session session, until 'Monitor Now' is clicked
       if (refreshedVideo.lastRequestTime && 
           refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && 
           refreshedVideo.houseId === activeHouse && 
           !isCapturing) {
           setShowMissedAlert(true);
-      } else if (refreshedVideo.status === 'idle' && !refreshedVideo.lastRequestTime) {
-          setShowMissedAlert(false);
       }
       
       const refreshedGames = await getStoredGames();
@@ -106,7 +104,7 @@ const WorkerApp: React.FC = () => {
       if (ctx) {
         isSendingFrame.current = true;
         
-        const quality = videoRequest.quality || 'medium';
+        const quality = videoSession.quality || 'medium';
         let width = 360, height = 480, compression = 0.5, delay = 100;
 
         if (quality === 'low') {
@@ -164,13 +162,13 @@ const WorkerApp: React.FC = () => {
     setPermissionError(null);
     setShowMissedAlert(false);
 
-    // Record acknowledgement
-    if (videoRequest.lastRequestTime) {
-      lastAcknowledgedRequestRef.current = videoRequest.lastRequestTime;
+    // Record acknowledgement locally
+    if (videoSession.lastRequestTime) {
+      lastAcknowledgedRequestRef.current = videoSession.lastRequestTime;
       localStorage.setItem('fifa_last_ack_request', lastAcknowledgedRequestRef.current.toString());
     }
 
-    // Trigger notification to owner that counter is online
+    // Explicitly notify owner that the counter is online
     await updateVideoSession({ 
       lastOnlineSignalTime: Date.now(),
       houseId: activeHouse
@@ -191,14 +189,13 @@ const WorkerApp: React.FC = () => {
       console.error("Camera access error:", e);
       let errorMsg = "Unable to access the camera.";
       if (e.name === 'NotAllowedError') {
-        errorMsg = "Camera access denied. Enable permissions in settings.";
+        errorMsg = "Camera access denied. Please enable in browser settings.";
       }
       setPermissionError(errorMsg);
     }
   };
 
-  // Only the owner can end the session, but the worker can hide their local view if idle
-  const handleStopLocalView = async () => {
+  const handleStopLocalView = () => {
     setIsCapturing(false);
     capturingRef.current = false;
     if (activeStream.current) {
@@ -207,12 +204,12 @@ const WorkerApp: React.FC = () => {
     }
   };
 
-  // If owner ends session, worker stops capturing automatically
+  // Auto-stop if owner ends session
   useEffect(() => {
-    if (videoRequest.status === 'idle' && isCapturing) {
+    if (videoSession.status === 'idle' && isCapturing) {
       handleStopLocalView();
     }
-  }, [videoRequest.status]);
+  }, [videoSession.status]);
 
   const currentHouseTVs = TV_CONFIGS.filter(tv => tv.houseId === activeHouse);
   const dayStart = useMemo(() => {
@@ -228,6 +225,7 @@ const WorkerApp: React.FC = () => {
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)] max-w-5xl mx-auto relative animate-in fade-in duration-500">
+      {/* PERSISTENT MISSED REQUEST ALERT */}
       {showMissedAlert && !isCapturing && (
         <div className="fixed top-20 left-4 right-4 z-[150] bg-amber-500 rounded-2xl p-4 shadow-2xl flex items-center justify-between animate-in slide-in-from-top-4 duration-500 border border-black/10">
            <div className="flex items-center gap-3">
@@ -238,7 +236,7 @@ const WorkerApp: React.FC = () => {
              </div>
              <div>
                <p className="text-[10px] font-black uppercase tracking-widest text-black/60">Missed Request</p>
-               <p className="text-sm font-black text-black">Notify Owner</p>
+               <p className="text-sm font-black text-black">Notify Owner Now</p>
              </div>
            </div>
            <button 
@@ -250,11 +248,11 @@ const WorkerApp: React.FC = () => {
         </div>
       )}
 
-      {videoRequest.status === 'requested' && videoRequest.houseId === activeHouse && !isCapturing && (
+      {videoSession.status === 'requested' && videoSession.houseId === activeHouse && !isCapturing && !showMissedAlert && (
         <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 backdrop-blur-xl">
           <div className="w-full max-w-sm bg-zinc-950 border border-amber-500 rounded-[3rem] p-10 text-center shadow-2xl shadow-amber-500/20">
             <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4">Observation Request</h2>
-            <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] mb-10">Live Floor Sync Requested</p>
+            <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] mb-10">Owner is waiting for live floor sync</p>
             <button 
               onClick={startVideoFeed} 
               className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-5 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
@@ -274,9 +272,11 @@ const WorkerApp: React.FC = () => {
               <div className="w-6 h-6 bg-red-600 rounded-full shadow-[0_0_15px_#dc2626]"></div>
             </div>
             <h1 className="text-4xl font-black text-amber-500 uppercase tracking-[0.4em] mb-4">Live Floor</h1>
-            <p className="text-amber-900 text-[10px] font-black uppercase tracking-[1em] animate-pulse">Stream Active</p>
+            <p className="text-amber-900 text-[10px] font-black uppercase tracking-[1em] animate-pulse">Streaming to Owner</p>
           </div>
-          <p className="absolute bottom-12 text-zinc-700 text-[10px] font-black uppercase">Owner Controlled Session</p>
+          <div className="absolute bottom-12 text-center">
+            <p className="text-zinc-700 text-[10px] font-black uppercase tracking-widest">Only Owner Can End This Session</p>
+          </div>
         </div>
       )}
 

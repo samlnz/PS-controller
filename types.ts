@@ -18,11 +18,13 @@ export interface GameEntry {
   isSeparator?: boolean;
 }
 
+// Added 'video_session_ended' to type union and duration field for tracking session lengths
 export interface SessionEvent {
   id: string;
-  type: 'video_request' | 'yield_alert' | 'counter_online';
+  type: 'video_request' | 'yield_alert' | 'counter_online' | 'video_session_ended';
   houseId: HouseId;
   timestamp: number;
+  duration?: number;
 }
 
 export interface VideoSession {

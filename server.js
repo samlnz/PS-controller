@@ -25,6 +25,7 @@ let videoSession = {
 };
 let houseHeartbeats = { house1: 0, house2: 0 };
 let events = [];
+let sessionStartTime = 0;
 
 app.get('/api/games', (req, res) => res.json(games));
 app.post('/api/games', (req, res) => {
@@ -80,14 +81,33 @@ app.post('/api/video-session', (req, res) => {
   const oldSession = { ...videoSession };
   videoSession = { ...videoSession, ...req.body };
   
+  const now = Date.now();
+
   // Record video request event
   if (req.body.status === 'requested' && oldSession.status !== 'requested') {
-    videoSession.lastRequestTime = Date.now();
+    videoSession.lastRequestTime = now;
     events.push({
       id: Math.random().toString(36).substr(2, 9),
       type: 'video_request',
       houseId: videoSession.houseId,
-      timestamp: Date.now()
+      timestamp: now
+    });
+  }
+
+  // Session Timing
+  if (req.body.status === 'active' && oldSession.status !== 'active') {
+    sessionStartTime = now;
+  }
+
+  // End Session Recording
+  if (req.body.status === 'idle' && oldSession.status === 'active') {
+    const duration = now - sessionStartTime;
+    events.push({
+      id: Math.random().toString(36).substr(2, 9),
+      type: 'video_session_ended',
+      houseId: oldSession.houseId,
+      timestamp: now,
+      duration: duration
     });
   }
 
@@ -97,7 +117,7 @@ app.post('/api/video-session', (req, res) => {
       id: Math.random().toString(36).substr(2, 9),
       type: 'counter_online',
       houseId: req.body.houseId,
-      timestamp: Date.now()
+      timestamp: now
     });
   }
 
@@ -106,18 +126,17 @@ app.post('/api/video-session', (req, res) => {
 
 app.post('/api/events', (req, res) => {
   const { type, houseId } = req.body;
-  if (type === 'yield_alert') {
-    events.push({
-      id: Math.random().toString(36).substr(2, 9),
-      type,
-      houseId,
-      timestamp: Date.now()
-    });
-  }
+  const now = Date.now();
+  events.push({
+    id: Math.random().toString(36).substr(2, 9),
+    type,
+    houseId,
+    timestamp: now
+  });
   res.status(200).json({ success: true });
 });
 
-app.get('/api/events', (req, res) => res.json(events.slice(-50)));
+app.get('/api/events', (req, res) => res.json(events.slice(-100)));
 
 app.post('/api/video-frame', (req, res) => {
   videoSession.frame = req.body.frame;

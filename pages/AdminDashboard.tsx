@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
 import { GameEntry, HouseId, HouseThresholds, VideoSession, VideoQuality, SessionEvent } from '../types';
-import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession, getHouseStatus, recordEvent } from '../services/storage';
+import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession, getHouseStatus, recordEvent, getEvents } from '../services/storage';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
 type Period = 'today' | 'week' | 'month' | 'custom';
@@ -14,32 +14,62 @@ const AdminDashboard: React.FC = () => {
   const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
   const [houseStatus, setHouseStatus] = useState<Record<string, boolean>>({ house1: false, house2: false });
   const [isObserving, setIsObserving] = useState(false);
+  const [sessionEvents, setSessionEvents] = useState<SessionEvent[]>([]);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(Notification.permission);
   
   const lastOnlineSignalRef = useRef<number>(0);
   const alertedHousesRef = useRef<Record<string, boolean>>({});
 
-  const notify = () => {
-    if (navigator.vibrate) navigator.vibrate([200, 100, 200]);
+  const requestNotificationPermission = async () => {
+    const permission = await Notification.requestPermission();
+    setNotifPermission(permission);
+  };
+
+  const notify = (title: string, body: string) => {
+    // 1. Vibration: Standard notification pattern
+    if (navigator.vibrate) {
+      navigator.vibrate([200, 100, 200, 100, 500]);
+    }
+    
+    // 2. Sound: Standard phone notification chime
     const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
     audio.play().catch(() => {});
+
+    // 3. System Level Notification
+    if (Notification.permission === 'granted') {
+      try {
+        new Notification(title, { 
+          body, 
+          icon: 'https://cdn-icons-png.flaticon.com/512/621/621914.png',
+          tag: title.toLowerCase().replace(/\s/g, '-') 
+        });
+      } catch (e) {
+        console.warn("System notification failed", e);
+      }
+    }
   };
 
   const refreshData = async () => {
-    const [freshGames, freshThresholds, freshVideo, freshStatus] = await Promise.all([
+    const [freshGames, freshThresholds, freshVideo, freshStatus, freshEvents] = await Promise.all([
       getStoredGames(),
       getThresholds(),
       getVideoSession(),
-      getHouseStatus()
+      getHouseStatus(),
+      getEvents()
     ]);
     setGames(freshGames);
     setThresholds(freshThresholds);
     setHouseStatus(freshStatus);
+    setSessionEvents(freshEvents);
     
-    // Notification for Counter Online Signal
+    // Check for 'Monitor Now' signal from counter
     if (freshVideo.lastOnlineSignalTime && freshVideo.lastOnlineSignalTime > lastOnlineSignalRef.current) {
       if (lastOnlineSignalRef.current !== 0) {
-        notify();
-        // Visual indicator could be added here, but the vibration/sound handles the alert.
+        const houseName = freshVideo.houseId ? HOUSE_NAMES[freshVideo.houseId] : 'A Counter';
+        notify(
+          "Counter Online", 
+          `${houseName} is ready! You can resend your video request now.`
+        );
       }
       lastOnlineSignalRef.current = freshVideo.lastOnlineSignalTime;
     }
@@ -51,7 +81,7 @@ const AdminDashboard: React.FC = () => {
 
   useEffect(() => {
     refreshData();
-    const interval = setInterval(refreshData, 5000);
+    const interval = setInterval(refreshData, 4000);
     return () => clearInterval(interval);
   }, [isObserving]);
 
@@ -73,7 +103,12 @@ const AdminDashboard: React.FC = () => {
   }, [isObserving]);
 
   const handleRequestVideo = async (houseId: HouseId) => {
-    const initialSession: VideoSession = { houseId, status: 'requested', frame: undefined, quality: videoSession.quality || 'medium' };
+    const initialSession: VideoSession = { 
+      houseId, 
+      status: 'requested', 
+      frame: undefined, 
+      quality: videoSession.quality || 'medium' 
+    };
     setVideoSession(initialSession);
     await updateVideoSession(initialSession);
     setIsObserving(true);
@@ -99,7 +134,7 @@ const AdminDashboard: React.FC = () => {
       const val = hId === 'house1' ? h1 : h2;
       const thresh = thresholds[hId as HouseId];
       if (val < thresh && !alertedHousesRef.current[hId]) {
-        notify();
+        notify("Low Yield Alert", `${HOUSE_NAMES[hId]} yield is below threshold!`);
         recordEvent('yield_alert', hId);
         alertedHousesRef.current[hId] = true;
       } else if (val >= thresh) {
@@ -155,6 +190,7 @@ const AdminDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-700 pb-12">
+      {/* Video Observation Overlay */}
       {isObserving && (
         <div className="fixed inset-0 z-[200] bg-black/98 flex flex-col items-center justify-center p-4 backdrop-blur-2xl animate-in zoom-in duration-300">
           <div className="w-full max-w-[420px] aspect-[9/16] bg-zinc-900 rounded-[3.5rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/30">
@@ -206,9 +242,20 @@ const AdminDashboard: React.FC = () => {
         </div>
       )}
 
+      {/* Header with Permission Request */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-        <div>
-           <h2 className="text-3xl font-black text-amber-500 uppercase tracking-tighter">Owner Dashboard</h2>
+        <div className="flex flex-col gap-1">
+           <div className="flex items-center gap-3">
+             <h2 className="text-3xl font-black text-amber-500 uppercase tracking-tighter">Owner Dashboard</h2>
+             {notifPermission !== 'granted' && (
+               <button 
+                 onClick={requestNotificationPermission}
+                 className="bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[8px] font-black px-3 py-1 rounded-full uppercase tracking-widest hover:bg-amber-500/20 transition-all animate-pulse"
+               >
+                 Enable Alerts
+               </button>
+             )}
+           </div>
            <p className="text-amber-800 text-[10px] font-bold uppercase tracking-[0.2em]">Addis Ababa Premium Network</p>
         </div>
         <div className="flex bg-zinc-900 p-1 rounded-xl border border-amber-900/20">
@@ -277,39 +324,73 @@ const AdminDashboard: React.FC = () => {
         })}
       </div>
 
-      <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem]">
-        <div className="flex justify-between items-center mb-8">
-           <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest">Recent Activity</h4>
-           <span className="text-[8px] text-amber-800 font-black uppercase">Live Logs</span>
-        </div>
-        <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
-          {recentActivity.map(game => {
-            const tv = TV_CONFIGS.find(t => t.id === game.tvId);
-            return (
-              <div key={game.id} className="flex justify-between items-center p-4 bg-black/40 border border-amber-900/10 rounded-2xl hover:border-amber-500/30 transition-colors">
-                <div className="flex items-center gap-5">
-                  <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-center text-amber-500 font-black text-sm">
-                    {tv?.name.split(' ')[1]}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem]">
+          <div className="flex justify-between items-center mb-8">
+             <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest">Recent Activity</h4>
+             <span className="text-[8px] text-amber-800 font-black uppercase tracking-widest">Live Logs</span>
+          </div>
+          <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            {recentActivity.map(game => {
+              const tv = TV_CONFIGS.find(t => t.id === game.tvId);
+              return (
+                <div key={game.id} className="flex justify-between items-center p-4 bg-black/40 border border-amber-900/10 rounded-2xl hover:border-amber-500/30 transition-colors">
+                  <div className="flex items-center gap-5">
+                    <div className="w-12 h-12 bg-amber-500/10 border border-amber-500/20 rounded-xl flex items-center justify-center text-amber-500 font-black text-sm">
+                      {tv?.name.split(' ')[1]}
+                    </div>
+                    <div>
+                      <p className="text-xs text-amber-100 font-black uppercase tracking-tight">{tv?.name}</p>
+                      <p className="text-[8px] text-amber-700 font-bold uppercase tracking-widest">{HOUSE_NAMES[tv?.houseId || '']}</p>
+                    </div>
                   </div>
+                  <div className="text-right">
+                    <p className="text-sm font-black text-amber-500 tabular-nums">
+                      {new Date(game.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+                    </p>
+                    <p className="text-[9px] text-green-600 font-black uppercase tracking-widest">+{game.amount} ETB</p>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem]">
+          <div className="flex justify-between items-center mb-8">
+             <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest">System Audit Log</h4>
+             <span className="text-[8px] text-amber-800 font-black uppercase tracking-widest">Session Data</span>
+          </div>
+          <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+            {sessionEvents.slice().reverse().map(ev => (
+              <div key={ev.id} className="flex justify-between items-center p-4 bg-black/20 border border-amber-900/5 rounded-2xl">
+                <div className="flex items-center gap-4">
+                  <div className={`w-2 h-2 rounded-full ${ev.type === 'yield_alert' ? 'bg-red-500' : ev.type === 'counter_online' ? 'bg-green-500' : 'bg-amber-500'}`}></div>
                   <div>
-                    <p className="text-xs text-amber-100 font-black uppercase tracking-tight">{tv?.name}</p>
-                    <p className="text-[8px] text-amber-700 font-bold uppercase tracking-widest">{HOUSE_NAMES[tv?.houseId || '']}</p>
+                    <p className="text-[10px] text-zinc-300 font-black uppercase tracking-tight">
+                      {ev.type === 'yield_alert' ? 'LOW YIELD ALERT' : ev.type === 'counter_online' ? 'COUNTER ONLINE' : ev.type === 'video_request' ? 'VIDEO REQUEST' : 'SESSION ENDED'}
+                    </p>
+                    <p className="text-[8px] text-amber-800 font-bold uppercase tracking-widest">{HOUSE_NAMES[ev.houseId]}</p>
                   </div>
                 </div>
                 <div className="text-right">
-                  <p className="text-sm font-black text-amber-500 tabular-nums">
-                    {new Date(game.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
-                  </p>
-                  <p className="text-[9px] text-green-600 font-black uppercase tracking-widest">+{game.amount} ETB</p>
+                   <p className="text-[10px] font-black text-amber-600 tabular-nums">
+                     {new Date(ev.timestamp).toLocaleTimeString()}
+                   </p>
+                   {ev.type === 'video_session_ended' && (
+                     <p className="text-[8px] text-zinc-500 font-black uppercase tracking-widest">
+                       Duration: {ev.duration ? Math.floor(ev.duration / 1000) : 0}s
+                     </p>
+                   )}
                 </div>
               </div>
-            );
-          })}
+            ))}
+          </div>
         </div>
       </div>
 
       <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem] h-96">
-        <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8 text-center">Asset Revenue</h4>
+        <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8 text-center">Asset Revenue Breakdown</h4>
         <ResponsiveContainer width="100%" height="100%">
           <BarChart data={stats.tvPerformance} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
             <XAxis dataKey="name" stroke="#78350f" fontSize={10} axisLine={false} tickLine={false} />
