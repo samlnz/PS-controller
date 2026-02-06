@@ -1,13 +1,11 @@
 
-import { GameEntry } from '../types';
+import { GameEntry, VideoSession, HouseThresholds } from '../types';
 
 const STORAGE_KEY = 'fifa_game_counter_data';
 const PRICES_KEY = 'fifa_tv_prices';
-// In Railway, the backend URL is usually the same origin if serving the build, 
-// or an environment variable. We'll use a relative path for API calls.
+const THRESHOLDS_KEY = 'fifa_house_thresholds';
 const API_BASE = '/api';
 
-// Local storage is kept as a robust fallback for offline scenarios
 const getLocalGames = (): GameEntry[] => {
   const data = localStorage.getItem(STORAGE_KEY);
   return data ? JSON.parse(data) : [];
@@ -26,73 +24,128 @@ const setLocalPrices = (prices: Record<string, number>) => {
   localStorage.setItem(PRICES_KEY, JSON.stringify(prices));
 };
 
-// API Service
-export const getStoredGames = async (): Promise<GameEntry[]> => {
-  try {
-    const response = await fetch(`${API_BASE}/games`, {
-      headers: { 'Cache-Control': 'no-cache' }
-    });
-    if (response.ok) {
-      const remoteGames = await response.json();
-      setLocalGames(remoteGames);
-      return remoteGames;
-    }
-  } catch (error) {
-    console.warn('Backend unreachable, using local fallback:', error);
-  }
-  return getLocalGames();
+const mergeGames = (local: GameEntry[], remote: GameEntry[]): GameEntry[] => {
+  const map = new Map<string, GameEntry>();
+  remote.forEach(g => map.set(g.id, g));
+  local.forEach(g => map.set(g.id, g));
+  return Array.from(map.values()).sort((a, b) => a.timestamp - b.timestamp);
 };
 
-export const saveGames = async (games: GameEntry[]) => {
-  setLocalGames(games);
-  
+export const getStoredGames = async (): Promise<GameEntry[]> => {
+  const localGames = getLocalGames();
   try {
-    // We send the latest game entry or the full list depending on backend design.
-    // To keep it simple and robust, we sync the whole state.
+    const response = await fetch(`${API_BASE}/games`, {
+      headers: { 'Cache-Control': 'no-cache' },
+      signal: AbortSignal.timeout(3000)
+    });
+    if (response.ok) {
+      const remoteGames: GameEntry[] = await response.json();
+      const merged = mergeGames(localGames, remoteGames);
+      if (merged.length > remoteGames.length) {
+        await pushGamesToServer(merged);
+      }
+      setLocalGames(merged);
+      return merged;
+    }
+  } catch (error) {
+    console.warn('Sync attempt failed:', error);
+  }
+  return localGames;
+};
+
+const pushGamesToServer = async (games: GameEntry[]) => {
+  try {
     await fetch(`${API_BASE}/games`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ games }),
     });
-  } catch (error) {
-    console.error('Failed to sync games to Railway:', error);
+    return true;
+  } catch (e) {
+    return false;
   }
+};
+
+export const saveGames = async (games: GameEntry[]) => {
+  setLocalGames(games);
+  await pushGamesToServer(games);
 };
 
 export const clearAllData = async () => {
   localStorage.removeItem(STORAGE_KEY);
-  
   try {
     await fetch(`${API_BASE}/games`, { method: 'DELETE' });
-  } catch (error) {
-    console.error('Failed to clear Railway data:', error);
-  }
+  } catch (error) {}
 };
 
 export const getTVPrices = async (): Promise<Record<string, number>> => {
+  const localPrices = getLocalPrices();
   try {
     const response = await fetch(`${API_BASE}/prices`);
     if (response.ok) {
       const remotePrices = await response.json();
-      setLocalPrices(remotePrices);
-      return remotePrices;
+      const merged = { ...remotePrices, ...localPrices };
+      setLocalPrices(merged);
+      return merged;
     }
-  } catch (error) {
-    console.warn('Backend unreachable, using local prices:', error);
-  }
-  return getLocalPrices();
+  } catch (error) {}
+  return localPrices;
 };
 
 export const saveTVPrices = async (prices: Record<string, number>) => {
   setLocalPrices(prices);
-
   try {
     await fetch(`${API_BASE}/prices`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ prices }),
     });
-  } catch (error) {
-    console.error('Failed to sync prices to Railway:', error);
-  }
+  } catch (error) {}
+};
+
+// Video & Threshold Services
+export const getThresholds = async (): Promise<HouseThresholds> => {
+  try {
+    const response = await fetch(`${API_BASE}/thresholds`);
+    if (response.ok) return await response.json();
+  } catch (e) {}
+  return { house1: 2, house2: 2 };
+};
+
+export const saveThresholds = async (thresholds: HouseThresholds) => {
+  try {
+    await fetch(`${API_BASE}/thresholds`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(thresholds),
+    });
+  } catch (e) {}
+};
+
+export const getVideoSession = async (): Promise<VideoSession> => {
+  try {
+    const response = await fetch(`${API_BASE}/video-session`);
+    if (response.ok) return await response.json();
+  } catch (e) {}
+  return { houseId: null, status: 'idle' };
+};
+
+export const updateVideoSession = async (session: Partial<VideoSession>) => {
+  try {
+    await fetch(`${API_BASE}/video-session`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(session),
+    });
+  } catch (e) {}
+};
+
+export const sendVideoFrame = async (frame: string) => {
+  try {
+    await fetch(`${API_BASE}/video-frame`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ frame }),
+    });
+  } catch (e) {}
 };

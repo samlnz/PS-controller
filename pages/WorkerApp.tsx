@@ -1,208 +1,199 @@
 
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
-import { GameEntry, HouseId } from '../types';
-import { getStoredGames, saveGames, getTVPrices, saveTVPrices } from '../services/storage';
+import { GameEntry, HouseId, VideoSession } from '../types';
+import { getStoredGames, saveGames, getTVPrices, saveTVPrices, getVideoSession, updateVideoSession, sendVideoFrame } from '../services/storage';
 
 const WorkerApp: React.FC = () => {
   const [games, setGames] = useState<GameEntry[]>([]);
   const [activeHouse, setActiveHouse] = useState<HouseId>('house1');
   const [customPrices, setCustomPrices] = useState<Record<string, number>>({});
+  const [videoRequest, setVideoRequest] = useState<VideoSession>({ houseId: null, status: 'idle' });
+  const [isCapturing, setIsCapturing] = useState(false);
+  
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const captureInterval = useRef<number | null>(null);
 
   const loadData = async () => {
-    const [fetchedGames, fetchedPrices] = await Promise.all([
+    const [fetchedGames, fetchedPrices, fetchedVideo] = await Promise.all([
       getStoredGames(),
-      getTVPrices()
+      getTVPrices(),
+      getVideoSession()
     ]);
     setGames(fetchedGames);
     setCustomPrices(fetchedPrices);
+    setVideoRequest(fetchedVideo);
   };
 
   useEffect(() => {
     loadData();
-  }, []);
-
-  // Polling for cloud updates
-  useEffect(() => {
     const interval = setInterval(async () => {
-      const refreshedGames = await getStoredGames();
+      const [refreshedGames, refreshedVideo] = await Promise.all([
+        getStoredGames(),
+        getVideoSession()
+      ]);
       setGames(refreshedGames);
-    }, 5000);
+      setVideoRequest(refreshedVideo);
+    }, 3000);
     return () => clearInterval(interval);
   }, []);
 
-  const getEffectivePrice = (tvId: string, defaultPrice: number) => {
-    return customPrices[tvId] ?? defaultPrice;
-  };
+  const startVideoFeed = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      if (videoRef.current) {
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        setIsCapturing(true);
+        await updateVideoSession({ status: 'active' });
 
-  const handlePriceChange = async (tvId: string, newPrice: string) => {
-    const tvConfig = TV_CONFIGS.find(t => t.id === tvId);
-    const basePrice = tvConfig?.pricePerGame ?? 0;
-    
-    let val = parseInt(newPrice);
-    if (isNaN(val)) {
-      val = basePrice;
+        captureInterval.current = window.setInterval(() => {
+          if (canvasRef.current && videoRef.current) {
+            const ctx = canvasRef.current.getContext('2d');
+            if (ctx) {
+              canvasRef.current.width = 480;
+              canvasRef.current.height = 360;
+              ctx.drawImage(videoRef.current, 0, 0, 480, 360);
+              const frame = canvasRef.current.toDataURL('image/jpeg', 0.5);
+              sendVideoFrame(frame);
+            }
+          }
+        }, 300);
+      }
+    } catch (e) {
+      alert("Camera Access Required for Observation Mode.");
+      await updateVideoSession({ status: 'idle', houseId: null });
     }
-
-    const finalPrice = Math.max(val, basePrice);
-    
-    const updated = { ...customPrices, [tvId]: finalPrice };
-    setCustomPrices(updated);
-    await saveTVPrices(updated);
   };
 
-  const handleAddGame = async (tvId: string, price: number, isSeparator = false) => {
-    const newEntry: GameEntry = {
-      id: Math.random().toString(36).substr(2, 9),
-      tvId,
-      timestamp: Date.now(),
-      completed: true,
-      amount: isSeparator ? 0 : price,
-      isSeparator
-    };
-    const updated = [...games, newEntry];
-    setGames(updated);
-    await saveGames(updated);
+  const handleStopVideo = async () => {
+    if (captureInterval.current) clearInterval(captureInterval.current);
+    if (videoRef.current?.srcObject) {
+      (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+    }
+    setIsCapturing(false);
+    await updateVideoSession({ status: 'idle', houseId: null, frame: undefined });
   };
 
-  // Determine the start of the current business day (7:00 AM)
+  useEffect(() => {
+    if (videoRequest.status === 'idle' && isCapturing) {
+      handleStopVideo();
+    }
+  }, [videoRequest.status]);
+
   const businessDayStart = useMemo(() => {
     const now = new Date();
     const today7AM = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0, 0);
-    if (now.getHours() < 7) {
-      today7AM.setDate(today7AM.getDate() - 1);
-    }
+    if (now.getHours() < 7) today7AM.setDate(today7AM.getDate() - 1);
     return today7AM.getTime();
-  }, [games]); // Re-eval on sync
+  }, [games]);
 
   const currentHouseTVs = TV_CONFIGS.filter(tv => tv.houseId === activeHouse);
-  
-  const getHouseStats = (houseId: HouseId) => {
-    const houseEntries = games.filter(g => 
-      g.timestamp >= businessDayStart &&
-      TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === houseId
-    );
-    const revenue = houseEntries.reduce((acc, curr) => acc + curr.amount, 0);
-    return { count: houseEntries.filter(g => !g.isSeparator).length, revenue };
-  };
-
-  const stats = getHouseStats(activeHouse);
-
-  const gridCols = currentHouseTVs.length > 2 ? 'grid-cols-2' : 'grid-cols-1';
-  const gridRows = currentHouseTVs.length > 2 ? 'grid-rows-2' : `grid-rows-${currentHouseTVs.length}`;
+  const stats = useMemo(() => {
+    const hGames = games.filter(g => g.timestamp >= businessDayStart && TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === activeHouse);
+    return { revenue: hGames.reduce((a, c) => a + c.amount, 0) };
+  }, [games, activeHouse, businessDayStart]);
 
   return (
-    <div className="flex flex-col h-[calc(100vh-12rem)] max-w-5xl mx-auto">
-      {/* Sub-Header / House Navigation */}
+    <div className="flex flex-col h-[calc(100vh-12rem)] max-w-5xl mx-auto relative">
+      {/* Video Request Popup */}
+      {videoRequest.status === 'requested' && videoRequest.houseId === activeHouse && (
+        <div className="fixed inset-0 z-[200] bg-black/80 flex items-center justify-center p-4 backdrop-blur-md animate-in fade-in duration-300">
+          <div className="w-full max-w-sm bg-zinc-950 border border-amber-500 rounded-[2.5rem] p-8 text-center shadow-2xl shadow-amber-500/10">
+            <div className="w-20 h-20 bg-amber-500 rounded-3xl flex items-center justify-center mx-auto mb-6 animate-bounce">
+               <svg className="w-10 h-10 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+              </svg>
+            </div>
+            <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-2">Video Request</h2>
+            <p className="text-amber-700 text-[10px] font-black uppercase tracking-widest mb-8">The Owner has requested a live status check for {HOUSE_NAMES[activeHouse]}</p>
+            <button 
+              onClick={startVideoFeed}
+              className="w-full bg-amber-500 text-black font-black py-4 rounded-2xl uppercase tracking-widest shadow-lg shadow-amber-500/20 active:scale-95 transition-all"
+            >
+              Start Stream
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Observation Mode View */}
+      {isCapturing && (
+        <div className="fixed inset-0 z-[250] bg-black flex flex-col items-center justify-center animate-in zoom-in duration-500">
+          <video ref={videoRef} className="hidden" muted playsInline />
+          <canvas ref={canvasRef} className="hidden" />
+          <div className="relative flex flex-col items-center">
+            <div className="w-32 h-32 border-4 border-amber-500 rounded-full flex items-center justify-center animate-pulse mb-8">
+               <div className="w-24 h-24 border-2 border-amber-500/40 rounded-full flex items-center justify-center">
+                  <div className="w-4 h-4 bg-amber-500 rounded-full shadow-[0_0_20px_#f59e0b]"></div>
+               </div>
+            </div>
+            <h1 className="text-4xl font-black text-amber-500 uppercase tracking-[0.5em] text-center mb-4 drop-shadow-[0_0_10px_rgba(217,119,6,0.3)]">
+              Admin Observing
+            </h1>
+            <p className="text-amber-800 text-[10px] font-black uppercase tracking-[1em] animate-pulse">Encrypted Live Link Active</p>
+          </div>
+          <button 
+            onClick={handleStopVideo}
+            className="absolute bottom-12 px-8 py-3 bg-zinc-900 border border-amber-900 text-amber-900 font-black text-[10px] uppercase tracking-widest rounded-xl hover:text-amber-500 hover:border-amber-500 transition-all"
+          >
+            End Session
+          </button>
+        </div>
+      )}
+
+      {/* Sub-Header */}
       <div className="flex-none flex items-center justify-between mb-4 px-2">
         <div className="flex p-1 bg-zinc-900 border border-amber-900/30 rounded-2xl">
-          {(Object.keys(HOUSE_NAMES) as HouseId[]).map((hId) => (
-            <button
-              key={hId}
-              onClick={() => setActiveHouse(hId)}
-              className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${
-                activeHouse === hId 
-                  ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' 
-                  : 'text-amber-800 hover:text-amber-600'
-              }`}
-            >
+          {(['house1', 'house2'] as HouseId[]).map((hId) => (
+            <button key={hId} onClick={() => setActiveHouse(hId)} className={`px-5 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeHouse === hId ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-amber-800'}`}>
               {HOUSE_NAMES[hId]}
             </button>
           ))}
         </div>
-
-        <div className="flex items-center gap-3">
-          <div className="text-right">
-            <p className="text-[10px] text-amber-700 font-black uppercase tracking-tighter">Current Yield (from 7 AM)</p>
-            <p className="text-xl font-black text-amber-500 leading-none">{stats.revenue} <span className="text-[10px]">ETB</span></p>
-          </div>
+        <div className="text-right">
+          <p className="text-[10px] text-amber-700 font-black uppercase">Yield (from 7 AM)</p>
+          <p className="text-xl font-black text-amber-500">{stats.revenue} <span className="text-[10px]">ETB</span></p>
         </div>
       </div>
 
-      {/* Vertical Grid Dividing Screen Equally */}
-      <div className={`flex-grow grid ${gridCols} ${gridRows} gap-3 h-full`}>
+      {/* Grid */}
+      <div className="flex-grow grid grid-cols-2 gap-3 h-full">
         {currentHouseTVs.map((tv) => {
-          // Only show entries for the current business day
           const tvEntries = games.filter(g => g.tvId === tv.id && g.timestamp >= businessDayStart);
-          const currentPrice = getEffectivePrice(tv.id, tv.pricePerGame);
-          
-          let displayCounter = 0;
+          const currentPrice = customPrices[tv.id] ?? tv.pricePerGame;
+          let counter = 0;
 
           return (
-            <div 
-              key={tv.id} 
-              className="bg-zinc-900/40 border border-amber-900/20 rounded-3xl flex flex-col overflow-hidden hover:border-amber-500/40 transition-all shadow-lg"
-            >
-              {/* TV Cell Header */}
+            <div key={tv.id} className="bg-zinc-900/40 border border-amber-900/20 rounded-3xl flex flex-col overflow-hidden">
               <div className="bg-black/60 px-4 py-3 border-b border-amber-900/20 flex justify-between items-center">
-                <div>
-                  <h3 className="text-amber-500 font-black text-sm uppercase tracking-wider leading-none">{tv.name}</h3>
-                  <div className="flex flex-col mt-1">
-                    <div className="flex items-center gap-1">
-                      <input 
-                        type="number" 
-                        min={tv.pricePerGame}
-                        value={currentPrice}
-                        onChange={(e) => handlePriceChange(tv.id, e.target.value)}
-                        className="bg-transparent border-b border-amber-900/50 text-amber-500 font-black text-[11px] w-12 focus:outline-none focus:border-amber-500 transition-colors"
-                      />
-                      <span className="text-[9px] text-amber-800 font-bold uppercase">ETB / Game</span>
-                    </div>
-                    <span className="text-[7px] text-amber-900/60 font-black uppercase mt-0.5">Min: {tv.pricePerGame} ETB</span>
-                  </div>
-                </div>
-                <div className="text-right">
-                  <p className="text-[10px] text-amber-600 font-black">{tvEntries.filter(e => !e.isSeparator).length} <span className="opacity-50">GAMES</span></p>
-                </div>
+                <h3 className="text-amber-500 font-black text-sm uppercase">{tv.name}</h3>
+                <span className="text-[10px] text-amber-600 font-black">{tvEntries.filter(e => !e.isSeparator).length} G</span>
               </div>
-
-              {/* Scrollable Game Box Area */}
-              <div className="flex-grow p-4 overflow-y-auto scrollbar-thin">
+              <div className="flex-grow p-4 overflow-y-auto">
                 <div className="grid grid-cols-3 gap-3">
-                  {tvEntries.map((entry) => {
-                    if (entry.isSeparator) {
-                      displayCounter = 0; 
-                      return (
-                        <div key={entry.id} className="col-span-3 flex items-center gap-2 py-1">
-                          <div className="h-[1px] flex-grow bg-amber-900/30"></div>
-                          <span className="text-[7px] font-black text-amber-900 uppercase tracking-widest whitespace-nowrap">Session Reset</span>
-                          <div className="h-[1px] flex-grow bg-amber-900/30"></div>
-                        </div>
-                      );
-                    }
-
-                    displayCounter++;
+                  {tvEntries.map((e) => {
+                    if (e.isSeparator) { counter = 0; return <div key={e.id} className="col-span-3 h-[1px] bg-amber-900/20 my-1" /> }
+                    counter++;
                     return (
-                      <div 
-                        key={entry.id} 
-                        className="aspect-square bg-amber-500 rounded-2xl flex items-center justify-center text-black font-black text-lg relative shadow-md shadow-amber-500/10 transition-transform active:scale-95"
-                      >
-                        {displayCounter}
-                        <div className="absolute -top-1 -right-1 w-4 h-4 bg-black border border-amber-500 rounded-full flex items-center justify-center">
-                          <svg className="w-2.5 h-2.5 text-amber-500" fill="currentColor" viewBox="0 0 20 20">
-                            <path d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" />
-                          </svg>
-                        </div>
+                      <div key={e.id} className="aspect-square bg-amber-500 rounded-2xl flex items-center justify-center text-black font-black text-lg">
+                        {counter}
                       </div>
                     );
                   })}
-
                   <div className="col-span-3 grid grid-cols-2 gap-3 mt-1">
-                    <button
-                      onClick={() => handleAddGame(tv.id, currentPrice)}
-                      className="h-16 border-2 border-dashed border-amber-900/40 rounded-2xl flex flex-col items-center justify-center text-amber-900/60 hover:border-amber-500 hover:text-amber-500 hover:bg-amber-500/5 transition-all group"
-                    >
-                      <span className="text-2xl font-black leading-none">+</span>
-                      <span className="text-[8px] font-black uppercase mt-0.5">Add Game</span>
-                    </button>
-                    <button
-                      onClick={() => handleAddGame(tv.id, 0, true)}
-                      className="h-16 border-2 border-dashed border-amber-900/20 rounded-2xl flex flex-col items-center justify-center text-amber-900/40 hover:border-amber-700 hover:text-amber-700 hover:bg-amber-900/5 transition-all group"
-                    >
-                      <svg className="w-4 h-4 mb-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
-                      </svg>
-                      <span className="text-[8px] font-black uppercase">Separator</span>
+                    <button onClick={async () => {
+                      const updated = [...games, { id: Math.random().toString(36).substr(2, 9), tvId: tv.id, timestamp: Date.now(), completed: true, amount: currentPrice }];
+                      setGames(updated);
+                      await saveGames(updated);
+                    }} className="h-16 border-2 border-dashed border-amber-900/40 rounded-2xl text-amber-900/60 font-black text-2xl hover:border-amber-500 hover:text-amber-500">+</button>
+                    <button onClick={async () => {
+                      const updated = [...games, { id: Math.random().toString(36).substr(2, 9), tvId: tv.id, timestamp: Date.now(), completed: true, amount: 0, isSeparator: true }];
+                      setGames(updated);
+                      await saveGames(updated);
+                    }} className="h-16 border-2 border-dashed border-amber-900/20 rounded-2xl flex flex-col items-center justify-center">
+                      <span className="text-[8px] font-black text-amber-900/40 uppercase">Reset</span>
                     </button>
                   </div>
                 </div>
@@ -211,9 +202,8 @@ const WorkerApp: React.FC = () => {
           );
         })}
       </div>
-
       <div className="flex-none py-3 text-center">
-        <p className="text-[8px] text-amber-900 font-black uppercase tracking-[0.5em]">Game history synced with cloud ledger</p>
+        <p className="text-[8px] text-amber-900 font-black uppercase tracking-[0.5em]">Encrypted Session Active</p>
       </div>
     </div>
   );

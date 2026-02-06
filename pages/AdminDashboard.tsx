@@ -1,8 +1,8 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
-import { GameEntry } from '../types';
-import { getStoredGames, clearAllData } from '../services/storage';
+import { GameEntry, HouseId, HouseThresholds, VideoSession } from '../types';
+import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession } from '../services/storage';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 
 type Period = 'today' | 'week' | 'month' | 'custom';
@@ -12,16 +12,21 @@ const AdminDashboard: React.FC = () => {
   const [lastUpdate, setLastUpdate] = useState<string>(new Date().toLocaleTimeString());
   const [period, setPeriod] = useState<Period>('today');
   const [selectedDate, setSelectedDate] = useState<string>(new Date().toISOString().split('T')[0]);
+  
+  const [thresholds, setThresholds] = useState<HouseThresholds>({ house1: 2, house2: 2 });
+  const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle' });
+  const [isObserving, setIsObserving] = useState(false);
 
   const refreshData = async () => {
-    const freshGames = await getStoredGames();
-    setGames((prev) => {
-      if (JSON.stringify(prev) !== JSON.stringify(freshGames)) {
-        setLastUpdate(new Date().toLocaleTimeString());
-        return freshGames;
-      }
-      return prev;
-    });
+    const [freshGames, freshThresholds, freshVideo] = await Promise.all([
+      getStoredGames(),
+      getThresholds(),
+      getVideoSession()
+    ]);
+    setGames(freshGames);
+    setThresholds(freshThresholds);
+    setVideoSession(freshVideo);
+    setLastUpdate(new Date().toLocaleTimeString());
   };
 
   useEffect(() => {
@@ -30,302 +35,194 @@ const AdminDashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, []);
 
-  const handleResetDay = async () => {
-    if (confirm("OWNER ACTION REQUIRED: This will PERMANENTLY delete all historical game data and yields from the cloud. Continue?")) {
-      await clearAllData();
-      await refreshData();
-      setLastUpdate(new Date().toLocaleTimeString());
-    }
+  const handleRequestVideo = async (houseId: HouseId) => {
+    await updateVideoSession({ houseId, status: 'requested' });
+    setIsObserving(true);
   };
 
-  const filteredGames = useMemo(() => {
+  const handleEndVideo = async () => {
+    await updateVideoSession({ houseId: null, status: 'idle', frame: undefined });
+    setIsObserving(false);
+  };
+
+  const hourlyStats = useMemo(() => {
+    const oneHourAgo = Date.now() - 3600000;
+    const house1Recent = games.filter(g => 
+      g.timestamp >= oneHourAgo && 
+      !g.isSeparator && 
+      TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house1'
+    ).length;
+    const house2Recent = games.filter(g => 
+      g.timestamp >= oneHourAgo && 
+      !g.isSeparator && 
+      TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house2'
+    ).length;
+
+    return { house1: house1Recent, house2: house2Recent };
+  }, [games]);
+
+  const stats = useMemo(() => {
     const now = new Date();
-    
-    // Business Day starts at 7:00 AM
     const getStartOfBusinessDay = () => {
       const today7AM = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 7, 0, 0, 0);
-      if (now.getHours() < 7) {
-        today7AM.setDate(today7AM.getDate() - 1);
-      }
+      if (now.getHours() < 7) today7AM.setDate(today7AM.getDate() - 1);
       return today7AM.getTime();
     };
-
     const startOfBusinessDay = getStartOfBusinessDay();
-    
-    return games.filter(g => {
-      if (!g.completed) return false;
 
-      if (period === 'today') {
-        return g.timestamp >= startOfBusinessDay;
-      }
-      if (period === 'week') {
-        const sevenDaysAgo = now.getTime() - (7 * 24 * 60 * 60 * 1000);
-        return g.timestamp >= sevenDaysAgo;
-      }
-      if (period === 'month') {
-        const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1).getTime();
-        return g.timestamp >= startOfMonth;
-      }
+    const filtered = games.filter(g => {
+      if (!g.completed) return false;
+      if (period === 'today') return g.timestamp >= startOfBusinessDay;
+      if (period === 'week') return g.timestamp >= (now.getTime() - (7 * 24 * 60 * 60 * 1000));
+      if (period === 'month') return g.timestamp >= new Date(now.getFullYear(), now.getMonth(), 1).getTime();
       if (period === 'custom') {
         const targetDate = new Date(selectedDate);
-        const startOfSelectedDay = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 7, 0, 0, 0).getTime();
-        const endOfSelectedDay = startOfSelectedDay + (24 * 60 * 60 * 1000);
-        return g.timestamp >= startOfSelectedDay && g.timestamp < endOfSelectedDay;
+        const start = new Date(targetDate.getFullYear(), targetDate.getMonth(), targetDate.getDate(), 7, 0, 0, 0).getTime();
+        return g.timestamp >= start && g.timestamp < (start + 86400000);
       }
       return true;
     });
-  }, [games, period, selectedDate]);
 
-  const stats = useMemo(() => {
-    const totalRev = filteredGames.reduce((acc, g) => acc + g.amount, 0);
-    
-    const house1Entries = filteredGames.filter(g => 
-      TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house1'
-    );
-    const house2Entries = filteredGames.filter(g => 
-      TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house2'
-    );
-
-    const house1Rev = house1Entries.reduce((acc, g) => acc + g.amount, 0);
-    const house2Rev = house2Entries.reduce((acc, g) => acc + g.amount, 0);
-
-    const tvPerformance = TV_CONFIGS.map(tv => {
-      const gList = filteredGames.filter(g => g.tvId === tv.id && !g.isSeparator);
-      const tvRevenue = filteredGames.filter(g => g.tvId === tv.id).reduce((acc, curr) => acc + curr.amount, 0);
-      const tvGamesCount = gList.length;
-      
-      return {
-        id: tv.id,
-        name: tv.name,
-        games: tvGamesCount,
-        revenue: tvRevenue,
-        house: tv.houseId,
-        avgRate: tvGamesCount > 0 ? (tvRevenue / tvGamesCount).toFixed(0) : '0',
-        share: totalRev > 0 ? ((tvRevenue / totalRev) * 100).toFixed(1) : '0'
-      };
-    });
+    const totalRev = filtered.reduce((acc, g) => acc + g.amount, 0);
+    const h1 = filtered.filter(g => TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house1');
+    const h2 = filtered.filter(g => TV_CONFIGS.find(tv => tv.id === g.tvId)?.houseId === 'house2');
 
     return {
-      totalGames: filteredGames.filter(g => !g.isSeparator).length,
+      totalGames: filtered.filter(g => !g.isSeparator).length,
       totalRevenue: totalRev,
-      house1: { games: house1Entries.filter(g => !g.isSeparator).length, revenue: house1Rev },
-      house2: { games: house2Entries.filter(g => !g.isSeparator).length, revenue: house2Rev },
-      tvPerformance
+      house1: { games: h1.filter(g => !g.isSeparator).length, revenue: h1.reduce((a, c) => a + c.amount, 0) },
+      house2: { games: h2.filter(g => !g.isSeparator).length, revenue: h2.reduce((a, c) => a + c.amount, 0) },
+      tvPerformance: TV_CONFIGS.map(tv => {
+        const tvList = filtered.filter(g => g.tvId === tv.id);
+        const rev = tvList.reduce((a, c) => a + c.amount, 0);
+        return { name: tv.name, revenue: rev };
+      })
     };
-  }, [filteredGames]);
-
-  const getPeriodLabel = () => {
-    if (period === 'today') return "Today's Performance (From 7:00 AM)";
-    if (period === 'week') return "Weekly Performance (7D)";
-    if (period === 'month') return "Monthly Performance";
-    return `Revenue for ${selectedDate} (7 AM Start)`;
-  };
-
-  const COLORS = ['#d97706', '#f59e0b', '#fbbf24', '#fcd34d', '#78350f', '#451a03', '#92400e'];
+  }, [games, period, selectedDate]);
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-700 pb-12">
+      {/* Observation Overlay */}
+      {isObserving && (
+        <div className="fixed inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-xl animate-in zoom-in duration-300">
+          <div className="w-full max-w-4xl aspect-video bg-zinc-900 rounded-[3rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/20">
+            {videoSession.frame ? (
+              <img src={videoSession.frame} className="w-full h-full object-cover" alt="Live Feed" />
+            ) : (
+              <div className="w-full h-full flex items-center justify-center">
+                <div className="text-center">
+                  <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
+                  <p className="text-amber-500 font-black uppercase tracking-widest text-xs">Awaiting encrypted feed...</p>
+                </div>
+              </div>
+            )}
+            <div className="absolute top-8 left-8 flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30">
+              <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
+              <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">Live: {HOUSE_NAMES[videoSession.houseId || '']}</span>
+            </div>
+            <div className="absolute bottom-8 right-8 bg-black/60 p-4 rounded-2xl backdrop-blur-md border border-amber-500/30 text-right">
+              <p className="text-[8px] text-amber-500/50 font-black uppercase mb-1">Gemini AI Status</p>
+              <p className="text-[10px] text-amber-500 font-black uppercase">Analyzing activity levels...</p>
+            </div>
+          </div>
+          <button 
+            onClick={handleEndVideo}
+            className="mt-8 px-12 py-4 bg-amber-500 text-black font-black rounded-2xl uppercase tracking-[0.3em] shadow-xl hover:bg-amber-400 transition-all active:scale-95"
+          >
+            Terminate Feed
+          </button>
+        </div>
+      )}
+
       {/* Header & Controls */}
       <div className="flex flex-col xl:flex-row justify-between items-start xl:items-center gap-6">
         <div className="flex flex-col gap-1">
           <h2 className="text-3xl font-black text-amber-500 uppercase tracking-tighter">Owner Oversight</h2>
-          <p className="text-amber-700 text-xs font-bold uppercase tracking-widest">{getPeriodLabel()}</p>
+          <p className="text-amber-700 text-xs font-bold uppercase tracking-widest">Real-time Performance Metrics</p>
         </div>
-
-        <div className="flex flex-wrap items-center gap-3 bg-zinc-900/50 p-2 rounded-2xl border border-amber-900/20 w-full xl:w-auto">
-          <div className="flex bg-black p-1 rounded-xl border border-amber-900/10">
+        <div className="flex flex-wrap items-center gap-3 bg-zinc-900/50 p-2 rounded-2xl border border-amber-900/20">
+           <div className="flex bg-black p-1 rounded-xl border border-amber-900/10">
             {(['today', 'week', 'month'] as const).map((p) => (
-              <button
-                key={p}
-                onClick={() => setPeriod(p)}
-                className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${
-                  period === p ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-amber-800 hover:text-amber-600'
-                }`}
-              >
+              <button key={p} onClick={() => setPeriod(p)} className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${period === p ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-amber-800'}`}>
                 {p}
               </button>
             ))}
           </div>
-          <div className="flex items-center gap-2 bg-black px-3 py-1.5 rounded-xl border border-amber-900/10">
-            <input 
-              type="date" 
-              value={selectedDate}
-              onChange={(e) => {
-                setSelectedDate(e.target.value);
-                setPeriod('custom');
-              }}
-              className="bg-transparent text-amber-500 text-[10px] font-black uppercase outline-none cursor-pointer [color-scheme:dark]"
-            />
-            <span className={`text-[10px] font-black uppercase ${period === 'custom' ? 'text-amber-500' : 'text-amber-900'}`}>Calendar</span>
-          </div>
-          <div className="hidden xl:block w-px h-6 bg-amber-900/20"></div>
-          <button 
-            onClick={handleResetDay}
-            className="ml-auto xl:ml-0 px-3 py-1.5 text-red-900 hover:text-red-500 transition-colors text-[9px] font-black uppercase tracking-widest"
-          >
-            Purge History
-          </button>
         </div>
       </div>
 
-      {/* KPI Cards */}
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-        <div className="bg-gradient-to-br from-amber-500 to-amber-700 p-8 rounded-[2rem] shadow-2xl shadow-amber-500/10 text-black transition-all duration-500 transform hover:scale-[1.02]">
-          <p className="text-amber-900/60 text-[10px] font-black uppercase tracking-[0.2em] mb-2">Net Period Revenue</p>
-          <div className="flex items-baseline gap-2">
-            <h3 className="text-5xl font-black tabular-nums">{stats.totalRevenue.toLocaleString()}</h3>
-            <span className="text-amber-900 font-black">ETB</span>
-          </div>
-          <div className="mt-6 flex items-center gap-2 bg-black/10 w-fit px-3 py-1.5 rounded-full text-[10px] font-black uppercase border border-black/5">
-            <span className="w-2 h-2 bg-black rounded-full animate-pulse"></span>
-            Cloud Sync Active
-          </div>
-        </div>
+      {/* KPI Cards & Alerts */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        {(['house1', 'house2'] as const).map((hId) => {
+          const isLow = hourlyStats[hId] < thresholds[hId];
+          return (
+            <div key={hId} className={`p-8 rounded-[2.5rem] border-2 transition-all ${isLow ? 'bg-zinc-950 border-red-900/40 shadow-2xl shadow-red-900/5' : 'bg-zinc-900 border-amber-900/20'}`}>
+              <div className="flex justify-between items-start mb-6">
+                <div>
+                  <p className="text-amber-700 text-[10px] font-black uppercase tracking-[0.2em] mb-1">{HOUSE_NAMES[hId]}</p>
+                  <h3 className="text-3xl font-black text-amber-500">{stats[hId].revenue.toLocaleString()} <span className="text-xs">ETB</span></h3>
+                </div>
+                {isLow ? (
+                  <div className="bg-red-500/10 border border-red-500/30 px-3 py-1 rounded-full flex items-center gap-2 animate-pulse">
+                    <span className="w-2 h-2 bg-red-500 rounded-full"></span>
+                    <span className="text-[9px] text-red-500 font-black uppercase">Low Hourly Yield</span>
+                  </div>
+                ) : (
+                  <div className="bg-green-500/10 border border-green-500/30 px-3 py-1 rounded-full flex items-center gap-2">
+                    <span className="w-2 h-2 bg-green-500 rounded-full"></span>
+                    <span className="text-[9px] text-green-500 font-black uppercase">Stable Flow</span>
+                  </div>
+                )}
+              </div>
 
-        <div className="bg-zinc-900 border border-amber-900/30 p-8 rounded-[2rem] shadow-sm flex flex-col justify-center">
-          <p className="text-amber-700 text-[10px] font-black uppercase tracking-[0.2em] mb-2">Game Volume</p>
-          <div className="flex items-baseline gap-2">
-            <h3 className="text-5xl font-black text-amber-500 tabular-nums">{stats.totalGames}</h3>
-            <span className="text-amber-700 font-bold uppercase text-xs">Sessions</span>
-          </div>
-          <div className="mt-6 flex items-center gap-4">
-             <div className="flex items-center gap-1.5">
-               <span className="w-2 h-2 rounded-full bg-amber-500"></span>
-               <span className="text-[10px] text-amber-800 font-black uppercase tracking-tighter">Live Systems: {TV_CONFIGS.length}</span>
-             </div>
-          </div>
-        </div>
+              <div className="grid grid-cols-2 gap-4 mb-8">
+                <div className="bg-black/40 p-4 rounded-2xl border border-amber-900/10">
+                  <p className="text-[9px] text-amber-700 font-black uppercase mb-1">Last 60 Mins</p>
+                  <p className="text-xl font-black text-amber-500">{hourlyStats[hId]} <span className="text-[10px]">G</span></p>
+                </div>
+                <div className="bg-black/40 p-4 rounded-2xl border border-amber-900/10">
+                  <p className="text-[9px] text-amber-700 font-black uppercase mb-1">Alert Set @</p>
+                  <input 
+                    type="number" 
+                    value={thresholds[hId]} 
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value) || 0;
+                      const next = { ...thresholds, [hId]: val };
+                      setThresholds(next);
+                      saveThresholds(next);
+                    }}
+                    className="bg-transparent text-xl font-black text-amber-500 w-full outline-none"
+                  />
+                </div>
+              </div>
 
-        <div className="grid grid-cols-1 gap-4">
-          <div className="bg-zinc-950 p-6 rounded-[1.5rem] border border-amber-900/30 hover:border-amber-500/30 transition-all flex flex-col justify-between">
-            <div className="flex justify-between items-center mb-1">
-              <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">House 1 Total</p>
-              <p className="text-xs font-black text-amber-500 tabular-nums">{stats.house1.games} GS</p>
-            </div>
-            <p className="text-2xl font-black text-amber-500 tabular-nums">{stats.house1.revenue.toLocaleString()} <span className="text-[10px] text-amber-700">ETB</span></p>
-          </div>
-          <div className="bg-zinc-950 p-6 rounded-[1.5rem] border border-amber-900/30 hover:border-amber-500/30 transition-all flex flex-col justify-between">
-            <div className="flex justify-between items-center mb-1">
-              <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">House 2 Total</p>
-              <p className="text-xs font-black text-amber-500 tabular-nums">{stats.house2.games} GS</p>
-            </div>
-            <p className="text-2xl font-black text-amber-500 tabular-nums">{stats.house2.revenue.toLocaleString()} <span className="text-[10px] text-amber-700">ETB</span></p>
-          </div>
-        </div>
-      </div>
-
-      {/* Visual Analytics */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-        <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2rem] shadow-sm">
-          <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8">Asset Revenue Contribution</h4>
-          <div className="h-64">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={stats.tvPerformance}>
-                <XAxis 
-                  dataKey="name" 
-                  stroke="#78350f" 
-                  fontSize={10} 
-                  axisLine={false} 
-                  tickLine={false} 
-                />
-                <Tooltip 
-                  contentStyle={{ backgroundColor: '#09090b', borderColor: '#451a03', color: '#f59e0b', borderRadius: '12px', fontSize: '12px' }}
-                  itemStyle={{ color: '#f59e0b' }}
-                  cursor={{ fill: 'rgba(217, 119, 6, 0.05)' }}
-                />
-                <Bar dataKey="revenue" radius={[6, 6, 0, 0]} animationDuration={1000}>
-                  {stats.tvPerformance.map((entry, index) => (
-                    <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                  ))}
-                </Bar>
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </div>
-
-        <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2rem] shadow-sm flex flex-col items-center">
-          <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8 self-start">Revenue Split Share</h4>
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <PieChart>
-                <Pie
-                  data={[
-                    { name: 'House 1', value: stats.house1.revenue },
-                    { name: 'House 2', value: stats.house2.revenue },
-                  ]}
-                  innerRadius={60}
-                  outerRadius={80}
-                  paddingAngle={8}
-                  dataKey="value"
-                  animationDuration={1000}
+              {isLow && (
+                <button 
+                  onClick={() => handleRequestVideo(hId)}
+                  className="w-full bg-red-600 hover:bg-red-500 text-white font-black py-4 rounded-2xl uppercase tracking-widest text-[10px] shadow-lg shadow-red-900/20 transition-all flex items-center justify-center gap-3 active:scale-95"
                 >
-                  <Cell fill="#d97706" />
-                  <Cell fill="#451a03" />
-                </Pie>
-                <Tooltip />
-              </PieChart>
-            </ResponsiveContainer>
-          </div>
-          <div className="flex gap-12 mt-2">
-            <div className="text-center">
-              <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">H1 Share</p>
-              <p className="text-lg font-black text-amber-500">{stats.totalRevenue > 0 ? Math.round((stats.house1.revenue / stats.totalRevenue) * 100) : 0}%</p>
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
+                  </svg>
+                  Request Live Video Feed
+                </button>
+              )}
             </div>
-            <div className="text-center">
-              <p className="text-[10px] text-amber-700 font-black uppercase tracking-widest">H2 Share</p>
-              <p className="text-lg font-black text-amber-500">{stats.totalRevenue > 0 ? Math.round((stats.house2.revenue / stats.totalRevenue) * 100) : 0}%</p>
-            </div>
-          </div>
-        </div>
+          );
+        })}
       </div>
 
-      {/* Ledger */}
-      <div className="bg-zinc-900 border border-amber-900/20 rounded-[2rem] overflow-hidden">
-        <div className="px-8 py-6 border-b border-amber-900/20 flex justify-between items-center bg-black/20">
-          <h4 className="text-xs font-black text-amber-500 uppercase tracking-[0.3em]">Detailed Daily Ledger</h4>
-          <span className="text-[9px] text-amber-800 font-bold uppercase tracking-widest">Cloud Update @ {lastUpdate}</span>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full">
-            <thead className="bg-black/40">
-              <tr className="text-[10px] font-black text-amber-700 uppercase tracking-widest">
-                <th className="px-8 py-4 text-left">Asset</th>
-                <th className="px-8 py-4 text-left">Location</th>
-                <th className="px-8 py-4 text-center">Sessions</th>
-                <th className="px-8 py-4 text-center">Avg Rate</th>
-                <th className="px-8 py-4 text-center">Global Share</th>
-                <th className="px-8 py-4 text-right">Yield (ETB)</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-amber-900/10">
-              {stats.tvPerformance.map((tv) => (
-                <tr key={tv.id} className="hover:bg-amber-500/5 transition-colors group">
-                  <td className="px-8 py-5">
-                    <span className="font-black text-amber-500 group-hover:text-amber-400">{tv.name}</span>
-                  </td>
-                  <td className="px-8 py-5">
-                    <span className="text-[9px] font-black px-2 py-1 rounded bg-black/50 text-amber-600 border border-amber-900/20 uppercase tracking-tighter">
-                      {HOUSE_NAMES[tv.house]}
-                    </span>
-                  </td>
-                  <td className="px-8 py-5 text-center text-amber-200 font-mono text-xs tabular-nums">
-                    {tv.games} <span className="text-[10px] opacity-40">G</span>
-                  </td>
-                  <td className="px-8 py-5 text-center text-amber-500 font-mono text-xs tabular-nums">
-                    {tv.avgRate} <span className="text-[9px] opacity-40">ETB/G</span>
-                  </td>
-                  <td className="px-8 py-5 text-center">
-                    <span className="inline-block px-2 py-1 rounded-full bg-amber-500/10 text-amber-500 font-black text-[10px] tabular-nums">
-                      {tv.share}%
-                    </span>
-                  </td>
-                  <td className="px-8 py-5 text-right font-black text-amber-500 tabular-nums">
-                    {tv.revenue.toLocaleString()}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Summary Chart */}
+      <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem]">
+        <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8">Asset Revenue contribution</h4>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={stats.tvPerformance}>
+              <XAxis dataKey="name" stroke="#78350f" fontSize={10} axisLine={false} tickLine={false} />
+              <Tooltip contentStyle={{ backgroundColor: '#09090b', borderColor: '#451a03', color: '#f59e0b', borderRadius: '12px' }} />
+              <Bar dataKey="revenue" radius={[6, 6, 0, 0]} fill="#d97706" />
+            </BarChart>
+          </ResponsiveContainer>
         </div>
       </div>
     </div>

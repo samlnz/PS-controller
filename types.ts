@@ -28,3 +28,14 @@ export interface GlobalStats {
   totalRevenue: number;
   houses: HouseStats[];
 }
+
+export interface VideoSession {
+  houseId: HouseId | null;
+  status: 'idle' | 'requested' | 'active';
+  frame?: string;
+}
+
+export interface HouseThresholds {
+  house1: number;
+  house2: number;
+}
