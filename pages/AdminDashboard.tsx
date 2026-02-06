@@ -27,7 +27,6 @@ const AdminDashboard: React.FC = () => {
     setGames(freshGames);
     setThresholds(freshThresholds);
     
-    // Maintain local state if observing, otherwise sync with server status
     if (freshVideo.status !== 'idle' && !isObserving) {
       setIsObserving(true);
     }
@@ -47,12 +46,12 @@ const AdminDashboard: React.FC = () => {
         const freshVideo = await getVideoSession();
         setVideoSession(prev => ({
           ...freshVideo,
-          frame: freshVideo.frame || prev.frame // Preserve last frame if current fetch is empty
+          frame: freshVideo.frame || prev.frame 
         }));
         if (freshVideo.status === 'idle') {
           setIsObserving(false);
         }
-      }, 200);
+      }, 150); // Slightly faster polling for smoother shop environment view
     }
     return () => clearInterval(frameInterval);
   }, [isObserving]);
@@ -74,7 +73,8 @@ const AdminDashboard: React.FC = () => {
   }, [isObserving]);
 
   const handleRequestVideo = async (houseId: HouseId) => {
-    await updateVideoSession({ houseId, status: 'requested' });
+    setVideoSession({ houseId, status: 'requested', frame: undefined }); // Clear stale frames
+    await updateVideoSession({ houseId, status: 'requested', frame: undefined });
     setIsObserving(true);
   };
 
@@ -146,6 +146,7 @@ const AdminDashboard: React.FC = () => {
                 <div className="text-center">
                   <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
                   <p className="text-amber-500 font-black uppercase tracking-widest text-[10px]">Syncing Encrypted Stream...</p>
+                  <p className="text-amber-800 text-[8px] font-bold uppercase tracking-[0.2em] mt-2">Waiting for Counter phone link...</p>
                 </div>
               </div>
             )}
@@ -161,13 +162,15 @@ const AdminDashboard: React.FC = () => {
                 onClick={() => setHideOwnerFace(!hideOwnerFace)}
                 className="absolute top-2 right-2 bg-black/60 p-1.5 rounded-lg border border-amber-500/30 text-[8px] text-amber-500 font-black uppercase hover:bg-amber-500 hover:text-black transition-colors"
               >
-                {hideOwnerFace ? 'Reveal Face' : 'Hide Face'}
+                {hideOwnerFace ? 'Reveal' : 'Hide'}
               </button>
             </div>
 
             <div className="absolute top-8 left-8 flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30">
-              <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-              <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">Live Link: {HOUSE_NAMES[videoSession.houseId || '']}</span>
+              <span className={`w-2 h-2 rounded-full animate-pulse ${videoSession.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+              <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">
+                {videoSession.status === 'active' ? 'Live Floor Link' : 'Connecting Floor...'} : {HOUSE_NAMES[videoSession.houseId || '']}
+              </span>
             </div>
           </div>
           <button 

@@ -15,6 +15,7 @@ const WorkerApp: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const isSendingFrame = useRef(false);
   const activeStream = useRef<MediaStream | null>(null);
+  const capturingRef = useRef(false);
 
   const loadData = async () => {
     const [fetchedGames, fetchedPrices, fetchedVideo] = await Promise.all([
@@ -33,7 +34,6 @@ const WorkerApp: React.FC = () => {
       const refreshedVideo = await getVideoSession();
       setVideoRequest(refreshedVideo);
       
-      // Merge logic: keep local games that haven't synced yet
       const refreshedGames = await getStoredGames();
       setGames(prev => {
         const localMap = new Map(prev.map(g => [g.id, g]));
@@ -53,10 +53,8 @@ const WorkerApp: React.FC = () => {
       amount 
     };
     
-    // TRULY OPTIMISTIC: Immediate local UI update
     setGames(prev => {
       const next = [...prev, newGame];
-      // Side effect triggered outside of strict render cycle for performance
       setTimeout(() => saveGames(next), 0);
       return next;
     });
@@ -78,18 +76,19 @@ const WorkerApp: React.FC = () => {
     });
   };
 
-  // Video Frame Loop: Sequential wait to prevent network backlog
+  // Improved Frame Loop using Ref to avoid stale closures
   const frameLoop = async () => {
-    if (!isCapturing || !videoRef.current || !canvasRef.current) return;
+    if (!capturingRef.current || !videoRef.current || !canvasRef.current) return;
 
-    if (videoRef.current.readyState === 4 && !isSendingFrame.current) {
+    const video = videoRef.current;
+    if (video.readyState >= 2 && !isSendingFrame.current) { // HAVE_CURRENT_DATA or better
       const ctx = canvasRef.current.getContext('2d');
       if (ctx) {
         isSendingFrame.current = true;
         canvasRef.current.width = 480;
         canvasRef.current.height = 360;
-        ctx.drawImage(videoRef.current, 0, 0, 480, 360);
-        const frameData = canvasRef.current.toDataURL('image/jpeg', 0.45);
+        ctx.drawImage(video, 0, 0, 480, 360);
+        const frameData = canvasRef.current.toDataURL('image/jpeg', 0.5);
         
         try {
           await sendVideoFrame(frameData);
@@ -101,45 +100,64 @@ const WorkerApp: React.FC = () => {
       }
     }
     
-    if (isCapturing) {
-      requestAnimationFrame(frameLoop);
+    if (capturingRef.current) {
+      // Use a slight timeout to cap frame rate and reduce server load
+      setTimeout(() => requestAnimationFrame(frameLoop), 100);
     }
   };
 
   useEffect(() => {
+    capturingRef.current = isCapturing;
     if (isCapturing) {
       frameLoop();
+    }
+  }, [isCapturing]);
+
+  // Reliable stream attachment
+  useEffect(() => {
+    if (isCapturing && videoRef.current && activeStream.current) {
+        const video = videoRef.current;
+        if (video.srcObject !== activeStream.current) {
+            video.srcObject = activeStream.current;
+            video.onloadedmetadata = () => {
+                video.play().then(() => {
+                    updateVideoSession({ status: 'active' });
+                }).catch(err => {
+                    console.error("Video playback failed:", err);
+                });
+            };
+        }
     }
   }, [isCapturing]);
 
   const startVideoFeed = async () => {
     try {
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { facingMode: 'user', width: 480, height: 360 }, 
+        video: { 
+            facingMode: { ideal: 'environment' }, 
+            width: { ideal: 640 }, 
+            height: { ideal: 480 } 
+        }, 
         audio: false 
       });
       activeStream.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = async () => {
-          await videoRef.current?.play();
-          setIsCapturing(true);
-          await updateVideoSession({ status: 'active' });
-        };
-      }
+      setIsCapturing(true); 
     } catch (e) {
-      alert("Camera authorization failed.");
+      alert("Camera authorization failed. Please allow camera access to show the shop environment.");
       await updateVideoSession({ status: 'idle', houseId: null });
     }
   };
 
   const handleStopVideo = async () => {
     setIsCapturing(false);
+    capturingRef.current = false;
     if (activeStream.current) {
       activeStream.current.getTracks().forEach(t => t.stop());
       activeStream.current = null;
     }
-    if (videoRef.current) videoRef.current.srcObject = null;
+    if (videoRef.current) {
+        videoRef.current.srcObject = null;
+    }
     await updateVideoSession({ status: 'idle', houseId: null, frame: undefined });
   };
 
@@ -185,7 +203,7 @@ const WorkerApp: React.FC = () => {
 
       {isCapturing && (
         <div className="fixed inset-0 z-[250] bg-black flex flex-col items-center justify-center animate-in zoom-in duration-500">
-          <video ref={videoRef} className="hidden" muted playsInline />
+          <video ref={videoRef} className="fixed opacity-0 pointer-events-none" muted playsInline />
           <canvas ref={canvasRef} className="hidden" />
           <div className="text-center">
             <div className="w-32 h-32 border-4 border-amber-500 rounded-full flex items-center justify-center mx-auto mb-10 shadow-[0_0_50px_rgba(245,158,11,0.3)] animate-pulse">
