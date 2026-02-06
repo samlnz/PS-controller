@@ -17,6 +17,7 @@ const AdminDashboard: React.FC = () => {
   const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle' });
   const [isObserving, setIsObserving] = useState(false);
 
+  // Standard data refresh (Stats, Thresholds, Session Status)
   const refreshData = async () => {
     const [freshGames, freshThresholds, freshVideo] = await Promise.all([
       getStoredGames(),
@@ -25,7 +26,12 @@ const AdminDashboard: React.FC = () => {
     ]);
     setGames(freshGames);
     setThresholds(freshThresholds);
-    setVideoSession(freshVideo);
+    setVideoSession(prev => ({ ...freshVideo, frame: freshVideo.frame || prev.frame }));
+    
+    // Auto-open overlay if a request was already active (for page refreshes)
+    if (freshVideo.status !== 'idle' && !isObserving) {
+      setIsObserving(true);
+    }
     setLastUpdate(new Date().toLocaleTimeString());
   };
 
@@ -33,7 +39,23 @@ const AdminDashboard: React.FC = () => {
     refreshData();
     const interval = setInterval(refreshData, 3000);
     return () => clearInterval(interval);
-  }, []);
+  }, [isObserving]);
+
+  // High-frequency frame polling when observing
+  useEffect(() => {
+    let frameInterval: number;
+    if (isObserving) {
+      frameInterval = window.setInterval(async () => {
+        const freshVideo = await getVideoSession();
+        setVideoSession(freshVideo);
+        // If the worker ends the session, close our overlay
+        if (freshVideo.status === 'idle') {
+          setIsObserving(false);
+        }
+      }, 200); // 5 FPS polling for smooth-enough video
+    }
+    return () => clearInterval(frameInterval);
+  }, [isObserving]);
 
   const handleRequestVideo = async (houseId: HouseId) => {
     await updateVideoSession({ houseId, status: 'requested' });
@@ -107,22 +129,28 @@ const AdminDashboard: React.FC = () => {
         <div className="fixed inset-0 z-[200] bg-black/95 flex flex-col items-center justify-center p-8 backdrop-blur-xl animate-in zoom-in duration-300">
           <div className="w-full max-w-4xl aspect-video bg-zinc-900 rounded-[3rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/20">
             {videoSession.frame ? (
-              <img src={videoSession.frame} className="w-full h-full object-cover" alt="Live Feed" />
+              <img src={videoSession.frame} className="w-full h-full object-cover animate-in fade-in duration-300" alt="Live Feed" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <div className="text-center">
                   <div className="w-12 h-12 border-4 border-amber-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-                  <p className="text-amber-500 font-black uppercase tracking-widest text-xs">Awaiting encrypted feed...</p>
+                  <p className="text-amber-500 font-black uppercase tracking-widest text-xs">
+                    {videoSession.status === 'requested' ? 'Waiting for worker to accept...' : 'Syncing encrypted feed...'}
+                  </p>
                 </div>
               </div>
             )}
             <div className="absolute top-8 left-8 flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30">
-              <span className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></span>
-              <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">Live: {HOUSE_NAMES[videoSession.houseId || '']}</span>
+              <span className={`w-2 h-2 rounded-full ${videoSession.status === 'active' ? 'bg-red-500 animate-pulse' : 'bg-amber-500'}`}></span>
+              <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">
+                {videoSession.status === 'active' ? 'Live' : 'Signal'}: {HOUSE_NAMES[videoSession.houseId || '']}
+              </span>
             </div>
             <div className="absolute bottom-8 right-8 bg-black/60 p-4 rounded-2xl backdrop-blur-md border border-amber-500/30 text-right">
-              <p className="text-[8px] text-amber-500/50 font-black uppercase mb-1">Gemini AI Status</p>
-              <p className="text-[10px] text-amber-500 font-black uppercase">Analyzing activity levels...</p>
+              <p className="text-[8px] text-amber-500/50 font-black uppercase mb-1">Observation status</p>
+              <p className="text-[10px] text-amber-500 font-black uppercase">
+                {videoSession.status === 'active' ? 'Secure Link Active' : 'Establishing connection...'}
+              </p>
             </div>
           </div>
           <button 
@@ -154,7 +182,7 @@ const AdminDashboard: React.FC = () => {
       {/* KPI Cards & Alerts */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         {(['house1', 'house2'] as const).map((hId) => {
-          const isLow = hourlyStats[hId] < thresholds[hId];
+          const isLow = hourlyStats[hId] < (thresholds[hId] || 0);
           return (
             <div key={hId} className={`p-8 rounded-[2.5rem] border-2 transition-all ${isLow ? 'bg-zinc-950 border-red-900/40 shadow-2xl shadow-red-900/5' : 'bg-zinc-900 border-amber-900/20'}`}>
               <div className="flex justify-between items-start mb-6">

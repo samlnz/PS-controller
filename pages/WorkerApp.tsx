@@ -29,10 +29,8 @@ const WorkerApp: React.FC = () => {
   useEffect(() => {
     loadData();
     const interval = setInterval(async () => {
-      const [refreshedGames, refreshedVideo] = await Promise.all([
-        getStoredGames(),
-        getVideoSession()
-      ]);
+      const refreshedGames = await getStoredGames();
+      const refreshedVideo = await getVideoSession();
       setGames(refreshedGames);
       setVideoRequest(refreshedVideo);
     }, 3000);
@@ -41,41 +39,54 @@ const WorkerApp: React.FC = () => {
 
   const startVideoFeed = async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'user' }, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } }, 
+        audio: false 
+      });
+      
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
-        setIsCapturing(true);
-        await updateVideoSession({ status: 'active' });
+        // Wait for video to be ready
+        videoRef.current.onloadedmetadata = async () => {
+          await videoRef.current?.play();
+          setIsCapturing(true);
+          await updateVideoSession({ status: 'active' });
 
-        captureInterval.current = window.setInterval(() => {
-          if (canvasRef.current && videoRef.current) {
-            const ctx = canvasRef.current.getContext('2d');
-            if (ctx) {
-              canvasRef.current.width = 480;
-              canvasRef.current.height = 360;
-              ctx.drawImage(videoRef.current, 0, 0, 480, 360);
-              const frame = canvasRef.current.toDataURL('image/jpeg', 0.5);
-              sendVideoFrame(frame);
+          captureInterval.current = window.setInterval(() => {
+            if (canvasRef.current && videoRef.current && videoRef.current.readyState === 4) {
+              const ctx = canvasRef.current.getContext('2d');
+              if (ctx) {
+                canvasRef.current.width = 480;
+                canvasRef.current.height = 360;
+                ctx.drawImage(videoRef.current, 0, 0, 480, 360);
+                const frame = canvasRef.current.toDataURL('image/jpeg', 0.4); // slightly lower quality for faster transport
+                sendVideoFrame(frame);
+              }
             }
-          }
-        }, 300);
+          }, 250); // 4 FPS transmission
+        };
       }
     } catch (e) {
+      console.error("Camera Error:", e);
       alert("Camera Access Required for Observation Mode.");
       await updateVideoSession({ status: 'idle', houseId: null });
     }
   };
 
   const handleStopVideo = async () => {
-    if (captureInterval.current) clearInterval(captureInterval.current);
+    if (captureInterval.current) {
+      clearInterval(captureInterval.current);
+      captureInterval.current = null;
+    }
     if (videoRef.current?.srcObject) {
       (videoRef.current.srcObject as MediaStream).getTracks().forEach(t => t.stop());
+      videoRef.current.srcObject = null;
     }
     setIsCapturing(false);
     await updateVideoSession({ status: 'idle', houseId: null, frame: undefined });
   };
 
+  // Sync state if remote session is terminated
   useEffect(() => {
     if (videoRequest.status === 'idle' && isCapturing) {
       handleStopVideo();
