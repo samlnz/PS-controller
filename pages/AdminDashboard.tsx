@@ -1,7 +1,7 @@
 
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
-import { GameEntry, HouseId, HouseThresholds, VideoSession } from '../types';
+import { GameEntry, HouseId, HouseThresholds, VideoSession, VideoQuality } from '../types';
 import { getStoredGames, clearAllData, getThresholds, saveThresholds, updateVideoSession, getVideoSession } from '../services/storage';
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell, PieChart, Pie } from 'recharts';
 
@@ -11,7 +11,7 @@ const AdminDashboard: React.FC = () => {
   const [games, setGames] = useState<GameEntry[]>([]);
   const [period, setPeriod] = useState<Period>('today');
   const [thresholds, setThresholds] = useState<HouseThresholds>({ house1: 2, house2: 2 });
-  const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle' });
+  const [videoSession, setVideoSession] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
   const [isObserving, setIsObserving] = useState(false);
   const [hideOwnerFace, setHideOwnerFace] = useState(true);
 
@@ -51,7 +51,7 @@ const AdminDashboard: React.FC = () => {
         if (freshVideo.status === 'idle') {
           setIsObserving(false);
         }
-      }, 150); // Slightly faster polling for smoother shop environment view
+      }, 150); 
     }
     return () => clearInterval(frameInterval);
   }, [isObserving]);
@@ -73,9 +73,15 @@ const AdminDashboard: React.FC = () => {
   }, [isObserving]);
 
   const handleRequestVideo = async (houseId: HouseId) => {
-    setVideoSession({ houseId, status: 'requested', frame: undefined }); // Clear stale frames
-    await updateVideoSession({ houseId, status: 'requested', frame: undefined });
+    const initialSession: VideoSession = { houseId, status: 'requested', frame: undefined, quality: 'medium' };
+    setVideoSession(initialSession);
+    await updateVideoSession(initialSession);
     setIsObserving(true);
+  };
+
+  const handleUpdateQuality = async (quality: VideoQuality) => {
+    setVideoSession(prev => ({ ...prev, quality }));
+    await updateVideoSession({ quality });
   };
 
   const handleEndVideo = async () => {
@@ -164,6 +170,22 @@ const AdminDashboard: React.FC = () => {
               >
                 {hideOwnerFace ? 'Reveal' : 'Hide'}
               </button>
+            </div>
+
+            {/* Quality Controls */}
+            <div className="absolute bottom-6 right-6 flex flex-col gap-2">
+              <p className="text-[8px] text-amber-500 font-black uppercase tracking-widest text-right">Stream Quality</p>
+              <div className="flex bg-black/60 p-1 rounded-xl backdrop-blur-md border border-amber-500/30">
+                {(['low', 'medium', 'high'] as VideoQuality[]).map((q) => (
+                  <button 
+                    key={q} 
+                    onClick={() => handleUpdateQuality(q)}
+                    className={`px-3 py-1 rounded-lg text-[8px] font-black uppercase tracking-widest transition-all ${videoSession.quality === q ? 'bg-amber-500 text-black' : 'text-amber-500 hover:bg-amber-500/10'}`}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
             </div>
 
             <div className="absolute top-8 left-8 flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30">

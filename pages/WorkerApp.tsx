@@ -8,7 +8,7 @@ const WorkerApp: React.FC = () => {
   const [games, setGames] = useState<GameEntry[]>([]);
   const [activeHouse, setActiveHouse] = useState<HouseId>('house1');
   const [customPrices, setCustomPrices] = useState<Record<string, number>>({});
-  const [videoRequest, setVideoRequest] = useState<VideoSession>({ houseId: null, status: 'idle' });
+  const [videoRequest, setVideoRequest] = useState<VideoSession>({ houseId: null, status: 'idle', quality: 'medium' });
   const [isCapturing, setIsCapturing] = useState(false);
   
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -81,14 +81,25 @@ const WorkerApp: React.FC = () => {
     if (!capturingRef.current || !videoRef.current || !canvasRef.current) return;
 
     const video = videoRef.current;
-    if (video.readyState >= 2 && !isSendingFrame.current) { // HAVE_CURRENT_DATA or better
+    if (video.readyState >= 2 && !isSendingFrame.current) {
       const ctx = canvasRef.current.getContext('2d');
       if (ctx) {
         isSendingFrame.current = true;
-        canvasRef.current.width = 480;
-        canvasRef.current.height = 360;
-        ctx.drawImage(video, 0, 0, 480, 360);
-        const frameData = canvasRef.current.toDataURL('image/jpeg', 0.5);
+        
+        // Adaptive quality settings based on owner selection
+        const quality = videoRequest.quality || 'medium';
+        let width = 480, height = 360, compression = 0.5, delay = 100;
+
+        if (quality === 'low') {
+          width = 320; height = 240; compression = 0.2; delay = 200; // ~5 FPS
+        } else if (quality === 'high') {
+          width = 640; height = 480; compression = 0.8; delay = 60; // ~15 FPS
+        }
+
+        canvasRef.current.width = width;
+        canvasRef.current.height = height;
+        ctx.drawImage(video, 0, 0, width, height);
+        const frameData = canvasRef.current.toDataURL('image/jpeg', compression);
         
         try {
           await sendVideoFrame(frameData);
@@ -97,12 +108,13 @@ const WorkerApp: React.FC = () => {
         } finally {
           isSendingFrame.current = false;
         }
+
+        if (capturingRef.current) {
+          setTimeout(() => requestAnimationFrame(frameLoop), delay);
+        }
       }
-    }
-    
-    if (capturingRef.current) {
-      // Use a slight timeout to cap frame rate and reduce server load
-      setTimeout(() => requestAnimationFrame(frameLoop), 100);
+    } else if (capturingRef.current) {
+      requestAnimationFrame(frameLoop);
     }
   };
 
@@ -211,6 +223,7 @@ const WorkerApp: React.FC = () => {
             </div>
             <h1 className="text-4xl font-black text-amber-500 uppercase tracking-[0.4em] mb-4">Live Monitoring</h1>
             <p className="text-amber-900 text-[10px] font-black uppercase tracking-[1em] animate-pulse">Connection Secured • E2E Encrypted</p>
+            <p className="text-amber-700 text-[8px] font-black uppercase tracking-widest mt-2">Mode: {videoRequest.quality || 'medium'} quality</p>
           </div>
           <button 
             onClick={handleStopVideo} 

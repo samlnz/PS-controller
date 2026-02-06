@@ -1,5 +1,6 @@
 
 export type HouseId = 'house1' | 'house2';
+export type VideoQuality = 'low' | 'medium' | 'high';
 
 export interface TVConfig {
   id: string;
@@ -33,6 +34,7 @@ export interface VideoSession {
   houseId: HouseId | null;
   status: 'idle' | 'requested' | 'active';
   frame?: string;
+  quality?: VideoQuality;
 }
 
 export interface HouseThresholds {
