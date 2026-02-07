@@ -2,7 +2,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
 import { GameEntry, HouseId, HouseThresholds, VideoSession, VideoQuality, SessionEvent } from '../types';
-import { getStoredGames, getThresholds, saveThresholds, updateVideoSession, getVideoSession, getHouseStatus, recordEvent, getEvents } from '../services/storage';
+import { getStoredGames, getThresholds, saveThresholds, updateVideoSession, getVideoSession, getHouseStatus, recordEvent, getEvents, getAudioStream } from '../services/storage';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell, XAxis as RechartsXAxis } from 'recharts';
 
 type Period = 'today' | 'week' | 'month' | 'custom';
@@ -65,16 +65,22 @@ const AdminDashboard: React.FC = () => {
     if (freshVideo.status !== 'idle' && !isObserving) {
       setIsObserving(true);
     }
-
-    // Capture audio chunk if listening
-    if (isListening && freshVideo.houseId === isListening && freshVideo.audioChunk) {
-      if (!audioQueueRef.current.includes(freshVideo.audioChunk)) {
-        audioQueueRef.current.push(freshVideo.audioChunk);
-        if (audioQueueRef.current.length > 5) audioQueueRef.current.shift();
-        playNextAudioChunk();
-      }
-    }
   };
+
+  // Dedicated Audio Polling Loop
+  useEffect(() => {
+    let audioInterval: number;
+    if (isListening) {
+      audioInterval = window.setInterval(async () => {
+        const streamData = await getAudioStream();
+        if (streamData.chunks && streamData.chunks.length > 0) {
+          audioQueueRef.current.push(...streamData.chunks);
+          playNextAudioChunk();
+        }
+      }, 1000); // Aggressive audio polling
+    }
+    return () => clearInterval(audioInterval);
+  }, [isListening]);
 
   const playNextAudioChunk = async () => {
     if (isPlayingAudioRef.current || audioQueueRef.current.length === 0) return;
@@ -84,7 +90,8 @@ const AdminDashboard: React.FC = () => {
     if (!chunk) { isPlayingAudioRef.current = false; return; }
 
     try {
-      const audioBlob = await (await fetch(chunk)).blob();
+      const response = await fetch(chunk);
+      const audioBlob = await response.blob();
       const arrayBuffer = await audioBlob.arrayBuffer();
       
       if (!audioContextRef.current) {
@@ -101,15 +108,17 @@ const AdminDashboard: React.FC = () => {
       };
       source.start();
     } catch (e) {
+      console.error("Audio decode error", e);
       isPlayingAudioRef.current = false;
+      playNextAudioChunk();
     }
   };
 
   useEffect(() => {
     refreshData();
-    const interval = setInterval(refreshData, 2000); // Faster polling for audio/video
+    const interval = setInterval(refreshData, 3000); 
     return () => clearInterval(interval);
-  }, [isObserving, isListening]);
+  }, [isObserving]);
 
   useEffect(() => {
     let frameInterval: number;
@@ -136,6 +145,13 @@ const AdminDashboard: React.FC = () => {
       await updateVideoSession({ audioRequested: false });
     } else {
       setIsListening(houseId);
+      // Explicitly unlock audio context on owner gesture
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume();
+      }
       await updateVideoSession({ audioRequested: true, houseId });
     }
   };
@@ -150,7 +166,6 @@ const AdminDashboard: React.FC = () => {
     setIsObserving(false);
   };
 
-  // Added updateThreshold function to handle threshold changes
   const updateThreshold = async (houseId: HouseId, value: number) => {
     const next = { ...thresholds, [houseId]: value };
     setThresholds(next);

@@ -19,7 +19,7 @@ let videoSession = {
   houseId: null, 
   status: 'idle', 
   frame: null, 
-  audioChunk: null,
+  audioChunks: [], // Changed to array for buffering
   audioRequested: false,
   quality: 'medium',
   lastRequestTime: 0,
@@ -79,6 +79,14 @@ app.get('/api/house-status', (req, res) => {
 });
 
 app.get('/api/video-session', (req, res) => res.json(videoSession));
+
+// Audio stream specific endpoint to consume and clear buffer
+app.get('/api/audio-stream', (req, res) => {
+  const chunks = [...videoSession.audioChunks];
+  videoSession.audioChunks = [];
+  res.json({ chunks, audioRequested: videoSession.audioRequested });
+});
+
 app.post('/api/video-session', (req, res) => {
   const oldSession = { ...videoSession };
   videoSession = { ...videoSession, ...req.body };
@@ -124,7 +132,8 @@ app.post('/api/video-session', (req, res) => {
 
 app.post('/api/audio-chunk', (req, res) => {
   if (req.body.audioChunk) {
-    videoSession.audioChunk = req.body.audioChunk;
+    videoSession.audioChunks.push(req.body.audioChunk);
+    if (videoSession.audioChunks.length > 50) videoSession.audioChunks.shift();
   }
   res.status(200).json({ success: true });
 });

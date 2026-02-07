@@ -146,6 +146,14 @@ export const getVideoSession = async (): Promise<VideoSession> => {
   return { houseId: null, status: 'idle' };
 };
 
+export const getAudioStream = async (): Promise<{ chunks: string[], audioRequested: boolean }> => {
+  try {
+    const response = await fetch(`${API_BASE}/audio-stream`);
+    if (response.ok) return await response.json();
+  } catch (e) {}
+  return { chunks: [], audioRequested: false };
+};
+
 export const updateVideoSession = async (session: Partial<VideoSession>) => {
   try {
     await fetch(`${API_BASE}/video-session`, {
