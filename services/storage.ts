@@ -166,7 +166,17 @@ export const sendVideoFrame = async (frame: string) => {
   } catch (e) {}
 };
 
-export const recordEvent = async (type: 'yield_alert', houseId: string) => {
+export const sendAudioChunk = async (audioChunk: string) => {
+  try {
+    await fetch(`${API_BASE}/audio-chunk`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ audioChunk }),
+    });
+  } catch (e) {}
+};
+
+export const recordEvent = async (type: SessionEvent['type'], houseId: string) => {
   try {
     await fetch(`${API_BASE}/events`, {
       method: 'POST',

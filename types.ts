@@ -18,10 +18,9 @@ export interface GameEntry {
   isSeparator?: boolean;
 }
 
-// Added 'video_session_ended' to type union and duration field for tracking session lengths
 export interface SessionEvent {
   id: string;
-  type: 'video_request' | 'yield_alert' | 'counter_online' | 'video_session_ended';
+  type: 'video_request' | 'yield_alert' | 'counter_online' | 'video_session_ended' | 'audio_breach';
   houseId: HouseId;
   timestamp: number;
   duration?: number;
@@ -31,6 +30,8 @@ export interface VideoSession {
   houseId: HouseId | null;
   status: 'idle' | 'requested' | 'active';
   frame?: string;
+  audioChunk?: string; // Base64 audio data
+  audioRequested?: boolean;
   quality?: VideoQuality;
   lastRequestTime?: number;
   lastOnlineSignalTime?: number;

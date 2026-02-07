@@ -9,7 +9,7 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-app.use(express.json({ limit: '5mb' }));
+app.use(express.json({ limit: '10mb' }));
 app.use(express.static(path.join(__dirname, 'dist')));
 
 let games = [];
@@ -19,6 +19,8 @@ let videoSession = {
   houseId: null, 
   status: 'idle', 
   frame: null, 
+  audioChunk: null,
+  audioRequested: false,
   quality: 'medium',
   lastRequestTime: 0,
   lastOnlineSignalTime: 0
@@ -79,12 +81,10 @@ app.get('/api/house-status', (req, res) => {
 app.get('/api/video-session', (req, res) => res.json(videoSession));
 app.post('/api/video-session', (req, res) => {
   const oldSession = { ...videoSession };
-  // Merge new data but preserve specific metadata if not explicitly cleared
   videoSession = { ...videoSession, ...req.body };
   
   const now = Date.now();
 
-  // Record video request event
   if (req.body.status === 'requested' && oldSession.status !== 'requested') {
     videoSession.lastRequestTime = now;
     events.push({
@@ -95,12 +95,10 @@ app.post('/api/video-session', (req, res) => {
     });
   }
 
-  // Session Timing
   if (req.body.status === 'active' && oldSession.status !== 'active') {
     sessionStartTime = now;
   }
 
-  // End Session Recording
   if (req.body.status === 'idle' && oldSession.status === 'active') {
     const duration = now - sessionStartTime;
     events.push({
@@ -112,7 +110,6 @@ app.post('/api/video-session', (req, res) => {
     });
   }
 
-  // Record online signal
   if (req.body.lastOnlineSignalTime && req.body.lastOnlineSignalTime !== oldSession.lastOnlineSignalTime) {
     events.push({
       id: Math.random().toString(36).substr(2, 9),
@@ -123,6 +120,18 @@ app.post('/api/video-session', (req, res) => {
   }
 
   res.status(200).json(videoSession);
+});
+
+app.post('/api/audio-chunk', (req, res) => {
+  if (req.body.audioChunk) {
+    videoSession.audioChunk = req.body.audioChunk;
+  }
+  res.status(200).json({ success: true });
+});
+
+app.post('/api/video-frame', (req, res) => {
+  videoSession.frame = req.body.frame;
+  res.status(200).json({ success: true });
 });
 
 app.post('/api/events', (req, res) => {
@@ -138,11 +147,6 @@ app.post('/api/events', (req, res) => {
 });
 
 app.get('/api/events', (req, res) => res.json(events.slice(-100)));
-
-app.post('/api/video-frame', (req, res) => {
-  videoSession.frame = req.body.frame;
-  res.status(200).json({ success: true });
-});
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
