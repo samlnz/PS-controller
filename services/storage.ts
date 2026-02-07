@@ -146,14 +146,6 @@ export const getVideoSession = async (): Promise<VideoSession> => {
   return { houseId: null, status: 'idle' };
 };
 
-export const getAudioStream = async (): Promise<{ chunks: string[], audioRequested: boolean }> => {
-  try {
-    const response = await fetch(`${API_BASE}/audio-stream`);
-    if (response.ok) return await response.json();
-  } catch (e) {}
-  return { chunks: [], audioRequested: false };
-};
-
 export const updateVideoSession = async (session: Partial<VideoSession>) => {
   try {
     await fetch(`${API_BASE}/video-session`, {
@@ -174,17 +166,17 @@ export const sendVideoFrame = async (frame: string) => {
   } catch (e) {}
 };
 
-export const sendAudioChunk = async (audioChunk: string) => {
+export const sendAudioFrame = async (audioFrame: string) => {
   try {
-    await fetch(`${API_BASE}/audio-chunk`, {
+    await fetch(`${API_BASE}/audio-frame`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ audioChunk }),
+      body: JSON.stringify({ audioFrame }),
     });
   } catch (e) {}
 };
 
-export const recordEvent = async (type: SessionEvent['type'], houseId: string) => {
+export const recordEvent = async (type: 'yield_alert', houseId: string) => {
   try {
     await fetch(`${API_BASE}/events`, {
       method: 'POST',

@@ -18,11 +18,12 @@ let thresholds = { house1: 2, house2: 2 };
 let videoSession = { 
   houseId: null, 
   status: 'idle', 
+  audioStatus: 'idle',
+  audioFrame: null,
   frame: null, 
-  audioChunks: [], // Changed to array for buffering
-  audioRequested: false,
   quality: 'medium',
   lastRequestTime: 0,
+  lastRequestedHouseId: null,
   lastOnlineSignalTime: 0
 };
 let houseHeartbeats = { house1: 0, house2: 0 };
@@ -79,22 +80,16 @@ app.get('/api/house-status', (req, res) => {
 });
 
 app.get('/api/video-session', (req, res) => res.json(videoSession));
-
-// Audio stream specific endpoint to consume and clear buffer
-app.get('/api/audio-stream', (req, res) => {
-  const chunks = [...videoSession.audioChunks];
-  videoSession.audioChunks = [];
-  res.json({ chunks, audioRequested: videoSession.audioRequested });
-});
-
 app.post('/api/video-session', (req, res) => {
   const oldSession = { ...videoSession };
   videoSession = { ...videoSession, ...req.body };
   
   const now = Date.now();
 
+  // Record video request event and capture persistent house ID
   if (req.body.status === 'requested' && oldSession.status !== 'requested') {
     videoSession.lastRequestTime = now;
+    videoSession.lastRequestedHouseId = req.body.houseId;
     events.push({
       id: Math.random().toString(36).substr(2, 9),
       type: 'video_request',
@@ -103,10 +98,12 @@ app.post('/api/video-session', (req, res) => {
     });
   }
 
+  // Session Timing
   if (req.body.status === 'active' && oldSession.status !== 'active') {
     sessionStartTime = now;
   }
 
+  // End Session Recording
   if (req.body.status === 'idle' && oldSession.status === 'active') {
     const duration = now - sessionStartTime;
     events.push({
@@ -118,29 +115,17 @@ app.post('/api/video-session', (req, res) => {
     });
   }
 
+  // Record online signal
   if (req.body.lastOnlineSignalTime && req.body.lastOnlineSignalTime !== oldSession.lastOnlineSignalTime) {
     events.push({
       id: Math.random().toString(36).substr(2, 9),
       type: 'counter_online',
-      houseId: req.body.houseId,
+      houseId: req.body.houseId || oldSession.lastRequestedHouseId,
       timestamp: now
     });
   }
 
   res.status(200).json(videoSession);
-});
-
-app.post('/api/audio-chunk', (req, res) => {
-  if (req.body.audioChunk) {
-    videoSession.audioChunks.push(req.body.audioChunk);
-    if (videoSession.audioChunks.length > 50) videoSession.audioChunks.shift();
-  }
-  res.status(200).json({ success: true });
-});
-
-app.post('/api/video-frame', (req, res) => {
-  videoSession.frame = req.body.frame;
-  res.status(200).json({ success: true });
 });
 
 app.post('/api/events', (req, res) => {
@@ -156,6 +141,16 @@ app.post('/api/events', (req, res) => {
 });
 
 app.get('/api/events', (req, res) => res.json(events.slice(-100)));
+
+app.post('/api/video-frame', (req, res) => {
+  videoSession.frame = req.body.frame;
+  res.status(200).json({ success: true });
+});
+
+app.post('/api/audio-frame', (req, res) => {
+  videoSession.audioFrame = req.body.audioFrame;
+  res.status(200).json({ success: true });
+});
 
 app.get('*', (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
