@@ -140,9 +140,8 @@ const AdminDashboard: React.FC = () => {
         }
       }
       
-      // Efficient Cache Management: Keep the last 150 IDs to prevent memory leaks while ensuring no duplicates
+      // Efficient Cache Management: Keep the last 100 IDs to prevent memory leaks
       if (playedAudioIdsRef.current.size > 200) {
-        // Fix: Explicitly cast Array.from result to number[] and sort parameters to avoid arithmetic/inference errors
         const ids: number[] = (Array.from(playedAudioIdsRef.current) as number[]).sort((a: number, b: number) => a - b);
         const toRemove = ids.slice(0, ids.length - 100);
         toRemove.forEach(id => playedAudioIdsRef.current.delete(id));
@@ -216,28 +215,41 @@ const AdminDashboard: React.FC = () => {
       if (!audioContextRef.current) {
         const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: SAMPLE_RATE });
         
+        // 1. High-Pass Filter: Removes low-end rumble and electrical hum
         const hpFilter = ctx.createBiquadFilter();
         hpFilter.type = 'highpass';
-        hpFilter.frequency.value = 180;
+        hpFilter.frequency.value = 150;
         hpFilter.Q.value = 1.0;
 
+        // 2. Body Filter: Adds weight and warmth to vocal frequencies
+        const bodyFilter = ctx.createBiquadFilter();
+        bodyFilter.type = 'peaking';
+        bodyFilter.frequency.value = 800;
+        bodyFilter.Q.value = 0.8;
+        bodyFilter.gain.value = 6;
+
+        // 3. Clarity/Presence Filter: Boosts speech intelligibility
         const speechFilter = ctx.createBiquadFilter();
         speechFilter.type = 'peaking';
-        speechFilter.frequency.value = 2800;
-        speechFilter.Q.value = 1.2;
-        speechFilter.gain.value = 5;
+        speechFilter.frequency.value = 3200;
+        speechFilter.Q.value = 1.0;
+        speechFilter.gain.value = 12; // Strong boost for clarity
 
+        // 4. Dynamics Compressor: Heavy compression for consistent loudness
         const compressor = ctx.createDynamicsCompressor();
-        compressor.threshold.setValueAtTime(-28, ctx.currentTime);
+        compressor.threshold.setValueAtTime(-24, ctx.currentTime);
         compressor.knee.setValueAtTime(30, ctx.currentTime);
-        compressor.ratio.setValueAtTime(10, ctx.currentTime);
+        compressor.ratio.setValueAtTime(12, ctx.currentTime);
         compressor.attack.setValueAtTime(0.003, ctx.currentTime);
         compressor.release.setValueAtTime(0.25, ctx.currentTime);
 
+        // 5. Output Gain: Significant boost to overcome quiet mobile hardware
         const masterGain = ctx.createGain();
-        masterGain.gain.value = 1.3;
+        masterGain.gain.value = 4.0; // 400% volume boost
 
-        hpFilter.connect(speechFilter);
+        // Connect Chain: Source -> HPF -> Body -> Speech -> Compressor -> Gain -> Output
+        hpFilter.connect(bodyFilter);
+        bodyFilter.connect(speechFilter);
         speechFilter.connect(compressor);
         compressor.connect(masterGain);
         masterGain.connect(ctx.destination);
