@@ -15,112 +15,102 @@ const AdminDashboard: React.FC = () => {
   const [houseStatus, setHouseStatus] = useState<Record<string, boolean>>({ house1: false, house2: false });
   const [isObserving, setIsObserving] = useState(false);
   const [isListening, setIsListening] = useState<HouseId | null>(null);
-  const [audioLevel, setAudioLevel] = useState(0);
+  const [sessionEvents, setSessionEvents] = useState<SessionEvent[]>([]);
+  const [notifPermission, setNotifPermission] = useState<NotificationPermission>(Notification.permission);
   
   const lastOnlineSignalRef = useRef<number>(0);
   const alertedHousesRef = useRef<Record<string, boolean>>({});
+  const audioQueueRef = useRef<string[]>([]);
+  const isPlayingAudioRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
-  const gainNodeRef = useRef<GainNode | null>(null);
-  const nextStartTimeRef = useRef<number>(0);
-  const linkEstablishedRef = useRef<boolean>(false);
 
-  // Helper: Decode Base64 to Uint8Array
-  const decodeBase64 = (base64: string) => {
-    const binaryString = atob(base64.split(',')[1] || base64);
-    const bytes = new Uint8Array(binaryString.length);
-    for (let i = 0; i < binaryString.length; i++) {
-      bytes[i] = binaryString.charCodeAt(i);
-    }
-    return bytes;
+  const requestNotificationPermission = async () => {
+    const permission = await Notification.requestPermission();
+    setNotifPermission(permission);
   };
 
-  // Helper: Convert PCM Bytes to AudioBuffer
-  const pcmToBuffer = (data: Uint8Array, ctx: AudioContext): AudioBuffer => {
-    const dataInt16 = new Int16Array(data.buffer);
-    const buffer = ctx.createBuffer(1, dataInt16.length, 16000);
-    const channelData = buffer.getChannelData(0);
-    let maxVal = 0;
-    for (let i = 0; i < dataInt16.length; i++) {
-      const val = dataInt16[i] / 32768.0;
-      channelData[i] = val;
-      if (Math.abs(val) > maxVal) maxVal = Math.abs(val);
-    }
-    setAudioLevel(maxVal); // Update visual feedback
-    return buffer;
-  };
-
-  const notify = (title: string, body: string, isUrgent: boolean = false) => {
-    if (navigator.vibrate) {
-      if (isUrgent) navigator.vibrate([200, 100, 200, 100, 200]);
-      else navigator.vibrate([200, 100, 200, 100, 500]);
-    }
-    const soundUrl = isUrgent 
-      ? 'https://assets.mixkit.co/active_storage/sfx/2568/2568-preview.mp3'
-      : 'https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3';
-    const audio = new Audio(soundUrl);
+  const notify = (title: string, body: string) => {
+    if (navigator.vibrate) navigator.vibrate([200, 100, 200, 100, 500]);
+    const audio = new Audio('https://assets.mixkit.co/active_storage/sfx/2869/2869-preview.mp3');
     audio.play().catch(() => {});
+
+    if (Notification.permission === 'granted') {
+      try {
+        new Notification(title, { body, icon: 'https://cdn-icons-png.flaticon.com/512/621/621914.png' });
+      } catch (e) {}
+    }
   };
 
   const refreshData = async () => {
-    const [freshGames, freshThresholds, freshVideo, freshStatus] = await Promise.all([
+    const [freshGames, freshThresholds, freshVideo, freshStatus, freshEvents] = await Promise.all([
       getStoredGames(),
       getThresholds(),
       getVideoSession(),
-      getHouseStatus()
+      getHouseStatus(),
+      getEvents()
     ]);
     setGames(freshGames);
     setThresholds(freshThresholds);
     setHouseStatus(freshStatus);
+    setSessionEvents(freshEvents);
     
     if (freshVideo.lastOnlineSignalTime && freshVideo.lastOnlineSignalTime > lastOnlineSignalRef.current) {
       if (lastOnlineSignalRef.current !== 0) {
-        notify("Counter Online", `${HOUSE_NAMES[freshVideo.houseId || '']} is ready!`);
+        const houseName = freshVideo.houseId ? HOUSE_NAMES[freshVideo.houseId] : 'A Counter';
+        notify("Counter Online", `${houseName} is ready! You can resend your video request now.`);
       }
       lastOnlineSignalRef.current = freshVideo.lastOnlineSignalTime;
     }
 
-    if (freshVideo.status !== 'idle' && !isObserving) setIsObserving(true);
+    if (freshVideo.status !== 'idle' && !isObserving) {
+      setIsObserving(true);
+    }
   };
 
+  // Dedicated Audio Polling Loop
   useEffect(() => {
     let audioInterval: number;
     if (isListening) {
       audioInterval = window.setInterval(async () => {
         const streamData = await getAudioStream();
         if (streamData.chunks && streamData.chunks.length > 0) {
-          if (!linkEstablishedRef.current) {
-            linkEstablishedRef.current = true;
-            notify("Stealth Link Active", `Listening to ${HOUSE_NAMES[isListening]}`, true);
-          }
-          playRawPCMChunks(streamData.chunks);
+          audioQueueRef.current.push(...streamData.chunks);
+          playNextAudioChunk();
         }
-      }, 800); 
-    } else {
-      nextStartTimeRef.current = 0;
-      linkEstablishedRef.current = false;
-      setAudioLevel(0);
+      }, 1000); // Aggressive audio polling
     }
     return () => clearInterval(audioInterval);
   }, [isListening]);
 
-  const playRawPCMChunks = async (chunks: string[]) => {
-    if (!audioContextRef.current) return;
-    const ctx = audioContextRef.current;
+  const playNextAudioChunk = async () => {
+    if (isPlayingAudioRef.current || audioQueueRef.current.length === 0) return;
+    
+    isPlayingAudioRef.current = true;
+    const chunk = audioQueueRef.current.shift();
+    if (!chunk) { isPlayingAudioRef.current = false; return; }
 
-    for (const base64 of chunks) {
-      try {
-        const bytes = decodeBase64(base64);
-        const buffer = pcmToBuffer(bytes, ctx);
-        const source = ctx.createBufferSource();
-        source.buffer = buffer;
-        source.connect(gainNodeRef.current!);
-        
-        const startTime = Math.max(nextStartTimeRef.current, ctx.currentTime + 0.05);
-        source.start(startTime);
-        nextStartTimeRef.current = startTime + buffer.duration;
-      } catch (e) {
-        console.error("PCM Playback Error", e);
+    try {
+      const response = await fetch(chunk);
+      const audioBlob = await response.blob();
+      const arrayBuffer = await audioBlob.arrayBuffer();
+      
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
       }
+      const ctx = audioContextRef.current;
+      const buffer = await ctx.decodeAudioData(arrayBuffer);
+      const source = ctx.createBufferSource();
+      source.buffer = buffer;
+      source.connect(ctx.destination);
+      source.onended = () => {
+        isPlayingAudioRef.current = false;
+        playNextAudioChunk();
+      };
+      source.start();
+    } catch (e) {
+      console.error("Audio decode error", e);
+      isPlayingAudioRef.current = false;
+      playNextAudioChunk();
     }
   };
 
@@ -142,37 +132,28 @@ const AdminDashboard: React.FC = () => {
     return () => clearInterval(frameInterval);
   }, [isObserving]);
 
-  const handleToggleAudio = async (houseId: HouseId) => {
-    if (isListening === houseId) {
-      setIsListening(null);
-      await updateVideoSession({ audioRequested: false });
-      if (audioContextRef.current) audioContextRef.current.suspend();
-    } else {
-      setIsListening(houseId);
-      linkEstablishedRef.current = false;
-      
-      if (!audioContextRef.current) {
-        const AudioCtx = (window.AudioContext || (window as any).webkitAudioContext);
-        audioContextRef.current = new AudioCtx({ sampleRate: 16000 });
-        gainNodeRef.current = audioContextRef.current.createGain();
-        gainNodeRef.current.gain.value = 2.5; // Strong boost for ambient sound
-        gainNodeRef.current.connect(audioContextRef.current.destination);
-      }
-      
-      if (audioContextRef.current.state === 'suspended') {
-        await audioContextRef.current.resume();
-      }
-      
-      nextStartTimeRef.current = audioContextRef.current.currentTime;
-      await updateVideoSession({ audioRequested: true, houseId });
-    }
-  };
-
   const handleRequestVideo = async (houseId: HouseId) => {
     const initialSession: VideoSession = { houseId, status: 'requested', quality: videoSession.quality || 'medium' };
     setVideoSession(initialSession);
     await updateVideoSession(initialSession);
     setIsObserving(true);
+  };
+
+  const handleToggleAudio = async (houseId: HouseId) => {
+    if (isListening === houseId) {
+      setIsListening(null);
+      await updateVideoSession({ audioRequested: false });
+    } else {
+      setIsListening(houseId);
+      // Explicitly unlock audio context on owner gesture
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      if (audioContextRef.current.state === 'suspended') {
+        audioContextRef.current.resume();
+      }
+      await updateVideoSession({ audioRequested: true, houseId });
+    }
   };
 
   const handleUpdateQuality = async (quality: VideoQuality) => {
@@ -201,6 +182,7 @@ const AdminDashboard: React.FC = () => {
       const thresh = thresholds[hId as HouseId];
       if (val < thresh && !alertedHousesRef.current[hId]) {
         notify("Low Yield Alert", `${HOUSE_NAMES[hId]} yield is below threshold!`);
+        recordEvent('yield_alert', hId);
         alertedHousesRef.current[hId] = true;
       } else if (val >= thresh) {
         alertedHousesRef.current[hId] = false;
@@ -239,11 +221,12 @@ const AdminDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-700 pb-12">
+      {/* Video Observation Overlay */}
       {isObserving && (
-        <div className="fixed inset-0 z-[200] bg-black/98 flex flex-col items-center justify-center p-4 backdrop-blur-2xl">
-          <div className="w-full max-w-[420px] aspect-[9/16] bg-zinc-900 rounded-[3.5rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl">
+        <div className="fixed inset-0 z-[200] bg-black/98 flex flex-col items-center justify-center p-4 backdrop-blur-2xl animate-in zoom-in duration-300">
+          <div className="w-full max-w-[420px] aspect-[9/16] bg-zinc-900 rounded-[3.5rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/30">
             {videoSession.frame ? (
-              <img src={videoSession.frame} className="w-full h-full object-cover" alt="Live Feed" />
+              <img src={videoSession.frame} className="w-full h-full object-cover animate-in fade-in duration-500" alt="Live Feed" />
             ) : (
               <div className="w-full h-full flex items-center justify-center">
                 <div className="text-center">
@@ -252,19 +235,40 @@ const AdminDashboard: React.FC = () => {
                 </div>
               </div>
             )}
+            <div className="absolute top-10 left-0 right-0 px-8 flex justify-between items-start pointer-events-none">
+              <div className="flex items-center gap-3 bg-black/60 px-4 py-2 rounded-full backdrop-blur-md border border-amber-500/30 pointer-events-auto">
+                <span className={`w-2.5 h-2.5 rounded-full animate-pulse ${videoSession.status === 'active' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                <span className="text-[10px] text-amber-500 font-black uppercase tracking-widest">
+                  {videoSession.status === 'active' ? 'LIVE' : 'SYNCING'} : {HOUSE_NAMES[videoSession.houseId || '']}
+                </span>
+              </div>
+            </div>
+            <div className="absolute bottom-12 left-0 right-0 px-8 flex flex-col gap-4">
+              <div className="flex bg-black/70 p-1.5 rounded-2xl backdrop-blur-xl border border-amber-500/20">
+                {(['low', 'medium', 'high'] as VideoQuality[]).map((q) => (
+                  <button key={q} onClick={() => handleUpdateQuality(q)} className={`flex-1 py-2 rounded-xl text-[9px] font-black uppercase tracking-widest transition-all ${videoSession.quality === q ? 'bg-amber-500 text-black' : 'text-amber-500 hover:bg-amber-500/10'}`}>{q}</button>
+                ))}
+              </div>
+            </div>
           </div>
-          <button onClick={handleEndVideo} className="mt-10 w-full max-w-[320px] py-5 bg-amber-500 text-black font-black rounded-2xl uppercase text-xs">End Session</button>
+          <button onClick={handleEndVideo} className="mt-10 w-full max-w-[320px] py-5 bg-amber-500 hover:bg-amber-400 text-black font-black rounded-2xl uppercase tracking-widest text-xs">End Session</button>
         </div>
       )}
 
+      {/* Main Dashboard UI */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="flex flex-col gap-1">
-           <h2 className="text-3xl font-black text-amber-500 uppercase tracking-tighter">Owner Dashboard</h2>
+           <div className="flex items-center gap-3">
+             <h2 className="text-3xl font-black text-amber-500 uppercase tracking-tighter">Owner Dashboard</h2>
+             {notifPermission !== 'granted' && (
+               <button onClick={requestNotificationPermission} className="bg-amber-500/10 border border-amber-500/20 text-amber-500 text-[8px] font-black px-3 py-1 rounded-full uppercase tracking-widest hover:bg-amber-500/20 transition-all animate-pulse">Enable Alerts</button>
+             )}
+           </div>
            <p className="text-amber-800 text-[10px] font-bold uppercase tracking-[0.2em]">Addis Ababa Premium Network</p>
         </div>
-        <div className="flex bg-zinc-900 p-1 rounded-xl">
+        <div className="flex bg-zinc-900 p-1 rounded-xl border border-amber-900/20">
           {(['today', 'week', 'month'] as Period[]).map((p) => (
-            <button key={p} onClick={() => setPeriod(p)} className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase transition-all ${period === p ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-amber-800'}`}>{p}</button>
+            <button key={p} onClick={() => setPeriod(p)} className={`px-4 py-1.5 rounded-lg text-[10px] font-black uppercase tracking-widest transition-all ${period === p ? 'bg-amber-500 text-black shadow-lg shadow-amber-500/20' : 'text-amber-800'}`}>{p}</button>
           ))}
         </div>
       </div>
@@ -275,34 +279,27 @@ const AdminDashboard: React.FC = () => {
           const isOnline = houseStatus[hId];
           const activeMic = isListening === hId;
           return (
-            <div key={hId} className={`p-8 bg-zinc-900 border-2 ${isUnderThreshold ? 'border-red-600/50' : 'border-amber-900/20'} rounded-[2.5rem] relative overflow-hidden transition-all duration-500`}>
-              <div className="flex justify-between items-start mb-6">
+            <div key={hId} className={`p-8 bg-zinc-900 border-2 ${isUnderThreshold ? 'border-red-600/50' : 'border-amber-900/20'} rounded-[2.5rem] relative overflow-hidden group transition-all duration-500`}>
+              <div className="flex justify-between items-start mb-6 relative z-10">
                 <div>
-                  <p className="text-amber-700 text-[10px] font-black uppercase mb-1">{HOUSE_NAMES[hId]}</p>
+                  <p className="text-amber-700 text-[10px] font-black uppercase tracking-widest mb-1">{HOUSE_NAMES[hId]}</p>
                   <h3 className="text-4xl font-black text-amber-500 tracking-tighter">{stats[hId].revenue.toLocaleString()} <span className="text-xs uppercase ml-1">ETB</span></h3>
                 </div>
                 <div className="flex flex-col items-center gap-2">
                   <div className="flex gap-2">
                     <button 
                       onClick={() => handleToggleAudio(hId)} 
-                      className={`p-4 rounded-2xl shadow-lg transition-all active:scale-90 flex items-center justify-center relative overflow-hidden ${activeMic ? 'bg-red-500 text-white' : 'bg-zinc-800 text-amber-500'}`}
+                      className={`p-4 rounded-2xl shadow-lg transition-all active:scale-90 flex items-center justify-center ${activeMic ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-800 text-amber-500'}`}
+                      title="Audio Stealth Link"
                     >
-                      {activeMic && (
-                        <div className="absolute inset-0 flex items-end justify-center pb-2">
-                          <div className="flex items-end gap-0.5 h-8">
-                            <div className="w-1 bg-white/40 rounded-full transition-all duration-75" style={{ height: `${Math.max(10, audioLevel * 100)}%` }}></div>
-                            <div className="w-1 bg-white/60 rounded-full transition-all duration-100" style={{ height: `${Math.max(15, audioLevel * 150)}%` }}></div>
-                            <div className="w-1 bg-white/40 rounded-full transition-all duration-75" style={{ height: `${Math.max(10, audioLevel * 100)}%` }}></div>
-                          </div>
-                        </div>
-                      )}
-                      <svg className={`w-5 h-5 relative z-10 ${activeMic ? 'animate-pulse' : ''}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                       </svg>
                     </button>
                     <button 
                       onClick={() => handleRequestVideo(hId)} 
-                      className={`${isUnderThreshold ? 'bg-red-600' : 'bg-amber-500'} text-black p-4 rounded-2xl transition-all active:scale-90 flex items-center justify-center`}
+                      className={`${isUnderThreshold ? 'bg-red-600 hover:bg-red-500' : 'bg-amber-500 hover:bg-amber-400'} text-black p-4 rounded-2xl shadow-lg transition-all active:scale-90 flex items-center justify-center`}
+                      title="Request Visual Link"
                     >
                       <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M15 10l4.553-2.276A1 1 0 0121 8.618v6.764a1 1 0 01-1.447.894L15 14M5 18h8a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v8a2 2 0 002 2z" />
@@ -315,14 +312,17 @@ const AdminDashboard: React.FC = () => {
                   </div>
                 </div>
               </div>
-              <div className="grid grid-cols-2 gap-4">
+              <div className="grid grid-cols-2 gap-4 relative z-10">
                  <div className="bg-black/40 p-4 rounded-2xl border border-amber-900/10">
                    <p className="text-[9px] text-amber-700 font-black uppercase mb-1">Hourly Volume</p>
                    <p className={`text-xl font-black ${isUnderThreshold ? 'text-red-500' : 'text-amber-500'}`}>{hourlyStats[hId]} <span className="text-[10px]">GAMES</span></p>
                  </div>
                  <div className="bg-black/40 p-4 rounded-2xl border border-amber-900/10">
                    <p className="text-[9px] text-amber-700 font-black uppercase mb-1">Alert Set At</p>
-                   <input type="number" value={thresholds[hId]} onChange={(e) => updateThreshold(hId, parseInt(e.target.value) || 0)} className="bg-transparent text-xl font-black text-amber-500 w-12 focus:outline-none" />
+                   <div className="flex items-center gap-2">
+                     <input type="number" value={thresholds[hId]} onChange={(e) => updateThreshold(hId, parseInt(e.target.value) || 0)} className="bg-transparent text-xl font-black text-amber-500 w-12 focus:outline-none" />
+                     <span className="text-[8px] text-amber-900 font-black uppercase tracking-widest">Min/HR</span>
+                   </div>
                  </div>
               </div>
             </div>
@@ -330,11 +330,13 @@ const AdminDashboard: React.FC = () => {
         })}
       </div>
 
+      {/* Asset Breakdown Chart */}
       <div className="bg-zinc-900 border border-amber-900/20 p-8 rounded-[2.5rem] h-96">
+        <h4 className="text-xs font-black text-amber-600 uppercase tracking-widest mb-8 text-center">Asset Revenue Breakdown</h4>
         <ResponsiveContainer width="100%" height="100%">
-          <BarChart data={stats.tvPerformance}>
+          <BarChart data={stats.tvPerformance} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
             <RechartsXAxis dataKey="name" stroke="#78350f" fontSize={10} axisLine={false} tickLine={false} />
-            <Tooltip contentStyle={{ backgroundColor: '#09090b', borderColor: '#451a03', color: '#f59e0b', borderRadius: '12px' }} />
+            <Tooltip contentStyle={{ backgroundColor: '#09090b', borderColor: '#451a03', color: '#f59e0b', borderRadius: '12px', fontSize: '10px' }} />
             <Bar dataKey="revenue" radius={[10, 10, 0, 0]}>
               {stats.tvPerformance.map((entry, index) => (
                 <Cell key={`cell-${index}`} fill={index % 2 === 0 ? '#f59e0b' : '#b45309'} />
