@@ -22,6 +22,7 @@ const AdminDashboard: React.FC = () => {
 
   // Audio Playback References - Optimized for clear playback
   const audioContextRef = useRef<AudioContext | null>(null);
+  const audioChainRef = useRef<AudioNode | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const playedAudioIdsRef = useRef<Set<number>>(new Set());
   const SAMPLE_RATE = 24000;
@@ -57,7 +58,7 @@ const AdminDashboard: React.FC = () => {
   };
 
   const playAudioFrame = async (base64: string) => {
-    if (!audioContextRef.current) return;
+    if (!audioContextRef.current || !audioChainRef.current) return;
     
     try {
       const bytes = decode(base64);
@@ -65,12 +66,19 @@ const AdminDashboard: React.FC = () => {
       
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
-      source.connect(audioContextRef.current.destination);
+      source.connect(audioChainRef.current);
       
       const currentTime = audioContextRef.current.currentTime;
-      // Buffer a tiny bit more to prevent stuttering
-      const startTime = Math.max(currentTime + 0.05, nextStartTimeRef.current);
       
+      // Robust Buffer Management:
+      // If scheduled time is too far in the past or future (drift), resync to current time
+      const driftThreshold = 0.5; // 500ms
+      if (nextStartTimeRef.current < currentTime - driftThreshold || 
+          nextStartTimeRef.current > currentTime + driftThreshold) {
+        nextStartTimeRef.current = currentTime + 0.05; // 50ms buffer
+      }
+
+      const startTime = nextStartTimeRef.current;
       source.start(startTime);
       nextStartTimeRef.current = startTime + audioBuffer.duration;
     } catch (e) {
@@ -105,7 +113,6 @@ const AdminDashboard: React.FC = () => {
   };
 
   const refreshData = async () => {
-    // Explicitly handle results from Promise.all to ensure proper type inference during destructuring
     const results = await Promise.all([
       getStoredGames(),
       getThresholds(),
@@ -125,20 +132,20 @@ const AdminDashboard: React.FC = () => {
     setHouseStatus(freshStatus);
     setSessionEvents(freshEvents);
     
-    // Play all new chunks from the circular buffer
     if (isListening && freshVideo.audioFrames && freshVideo.audioFrames.length > 0) {
       for (const frame of freshVideo.audioFrames) {
-        // frame.id is recognized as number due to explicit typing of freshVideo
         if (!playedAudioIdsRef.current.has(frame.id)) {
           playAudioFrame(frame.data);
           playedAudioIdsRef.current.add(frame.id);
-          // Keep set size manageable
-          if (playedAudioIdsRef.current.size > 100) {
-            const ids = Array.from(playedAudioIdsRef.current);
-            const minId = Math.min(...ids);
-            playedAudioIdsRef.current.delete(minId);
-          }
         }
+      }
+      
+      // Efficient Cache Management: Keep the last 150 IDs to prevent memory leaks while ensuring no duplicates
+      if (playedAudioIdsRef.current.size > 200) {
+        // Fix: Explicitly cast Array.from result to number[] and sort parameters to avoid arithmetic/inference errors
+        const ids: number[] = (Array.from(playedAudioIdsRef.current) as number[]).sort((a: number, b: number) => a - b);
+        const toRemove = ids.slice(0, ids.length - 100);
+        toRemove.forEach(id => playedAudioIdsRef.current.delete(id));
       }
     }
 
@@ -175,7 +182,6 @@ const AdminDashboard: React.FC = () => {
           frame: freshVideo.frame || prev.frame 
         }));
         
-        // High-frequency playback of any missing chunks
         if (isListening && freshVideo.audioFrames && freshVideo.audioFrames.length > 0) {
           for (const frame of freshVideo.audioFrames) {
             if (!playedAudioIdsRef.current.has(frame.id)) {
@@ -188,7 +194,7 @@ const AdminDashboard: React.FC = () => {
         if (freshVideo.status === 'idle') {
           setIsObserving(false);
         }
-      }, 100); // Poll faster for ultra-smooth real-time monitoring
+      }, 100);
     }
     return () => clearInterval(frameInterval);
   }, [isObserving, isListening]);
@@ -208,12 +214,42 @@ const AdminDashboard: React.FC = () => {
   const handleToggleAudio = async (houseId: HouseId) => {
     if (!isListening) {
       if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+        const ctx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: SAMPLE_RATE });
+        
+        const hpFilter = ctx.createBiquadFilter();
+        hpFilter.type = 'highpass';
+        hpFilter.frequency.value = 180;
+        hpFilter.Q.value = 1.0;
+
+        const speechFilter = ctx.createBiquadFilter();
+        speechFilter.type = 'peaking';
+        speechFilter.frequency.value = 2800;
+        speechFilter.Q.value = 1.2;
+        speechFilter.gain.value = 5;
+
+        const compressor = ctx.createDynamicsCompressor();
+        compressor.threshold.setValueAtTime(-28, ctx.currentTime);
+        compressor.knee.setValueAtTime(30, ctx.currentTime);
+        compressor.ratio.setValueAtTime(10, ctx.currentTime);
+        compressor.attack.setValueAtTime(0.003, ctx.currentTime);
+        compressor.release.setValueAtTime(0.25, ctx.currentTime);
+
+        const masterGain = ctx.createGain();
+        masterGain.gain.value = 1.3;
+
+        hpFilter.connect(speechFilter);
+        speechFilter.connect(compressor);
+        compressor.connect(masterGain);
+        masterGain.connect(ctx.destination);
+
+        audioChainRef.current = hpFilter;
+        audioContextRef.current = ctx;
       } else if (audioContextRef.current.state === 'suspended') {
         await audioContextRef.current.resume();
       }
       
       playedAudioIdsRef.current.clear();
+      nextStartTimeRef.current = 0; // Reset sync on new session
       setIsListening(true);
       await updateVideoSession({ audioStatus: 'active', houseId });
     } else {
@@ -297,7 +333,6 @@ const AdminDashboard: React.FC = () => {
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto animate-in fade-in duration-700 pb-12">
-      {/* Video Observation Overlay */}
       {isObserving && (
         <div className="fixed inset-0 z-[200] bg-black/98 flex flex-col items-center justify-center p-4 backdrop-blur-2xl animate-in zoom-in duration-300">
           <div className="w-full max-w-[420px] aspect-[9/16] bg-zinc-900 rounded-[3.5rem] border-4 border-amber-500 overflow-hidden relative shadow-2xl shadow-amber-500/30">
