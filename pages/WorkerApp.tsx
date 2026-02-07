@@ -46,9 +46,8 @@ const WorkerApp: React.FC = () => {
     setCustomPrices(fetchedPrices);
     setVideoSession(fetchedVideo);
 
-    // Check for missed request logic
     if (fetchedVideo.lastRequestTime && fetchedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && fetchedVideo.houseId === activeHouse) {
-      if (fetchedVideo.status === 'idle') setShowMissedAlert(true);
+      setShowMissedAlert(true);
     }
   };
 
@@ -100,8 +99,8 @@ const WorkerApp: React.FC = () => {
     setVideoSession(refreshedVideo);
     audioRequestedRef.current = refreshedVideo.audioRequested === true && refreshedVideo.houseId === hId;
 
-    if (refreshedVideo.lastRequestTime && refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && refreshedVideo.houseId === hId) {
-       if (refreshedVideo.status === 'idle') setShowMissedAlert(true);
+    if (refreshedVideo.lastRequestTime && refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && refreshedVideo.houseId === hId && !capturingRef.current) {
+        setShowMissedAlert(true);
     }
     const refreshedGames = await getStoredGames();
     setGames(refreshedGames);
@@ -170,18 +169,6 @@ const WorkerApp: React.FC = () => {
     else releaseWakeLock();
   }, [isCapturing]);
 
-  const handleMonitorNow = async () => {
-    const now = Date.now();
-    lastAcknowledgedRequestRef.current = videoSession.lastRequestTime || 0;
-    localStorage.setItem('fifa_last_ack_request', lastAcknowledgedRequestRef.current.toString());
-    setShowMissedAlert(false);
-    // Notify the owner by updating lastOnlineSignalTime
-    await updateVideoSession({ 
-      lastOnlineSignalTime: now, 
-      houseId: activeHouse 
-    });
-  };
-
   const startVideoFeed = async () => {
     setPermissionError(null);
     setShowMissedAlert(false);
@@ -237,39 +224,31 @@ const WorkerApp: React.FC = () => {
       )}
 
       {showMissedAlert && !isCapturing && (
-        <div className="fixed top-20 left-4 right-4 z-[150] bg-amber-500 rounded-2xl p-4 shadow-2xl flex items-center justify-between animate-in slide-in-from-top duration-500">
-           <div className="flex items-center gap-3">
-             <div className="w-8 h-8 bg-black/20 rounded-full flex items-center justify-center"><svg className="w-4 h-4 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" /></svg></div>
-             <p className="text-sm font-black text-black">Missed Request</p>
-           </div>
-           <button onClick={handleMonitorNow} className="bg-black text-amber-500 px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all">Monitor Now</button>
+        <div className="fixed top-20 left-4 right-4 z-[150] bg-amber-500 rounded-2xl p-4 shadow-2xl flex items-center justify-between">
+           <p className="text-sm font-black text-black">Observation Request Pending</p>
+           <button onClick={startVideoFeed} className="bg-black text-amber-500 px-6 py-2 rounded-xl text-[10px] font-black uppercase">Start Feed</button>
         </div>
       )}
 
       {videoSession.status === 'requested' && videoSession.houseId === activeHouse && !isCapturing && (
-        <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center backdrop-blur-md">
-          <div className="bg-zinc-900 border border-amber-500 p-10 rounded-[2.5rem] text-center max-w-xs">
-            <h2 className="text-2xl font-black text-amber-500 uppercase mb-8">Visual Link Requested</h2>
-            <button onClick={startVideoFeed} className="w-full bg-amber-500 text-black font-black py-5 rounded-2xl uppercase">Accept Visual Link</button>
-          </div>
+        <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center">
+          <button onClick={startVideoFeed} className="bg-amber-500 text-black font-black px-12 py-6 rounded-2xl uppercase">Accept Visual Link</button>
         </div>
       )}
 
       {isCapturing && (
         <div className="fixed inset-0 z-[250] bg-black flex flex-col items-center justify-center">
-          <video ref={videoRef} className="fixed opacity-0 pointer-events-none" autoPlay playsInline muted />
+          <video ref={videoRef} className="opacity-0 w-0 h-0" autoPlay playsInline muted />
           <canvas ref={canvasRef} className="hidden" />
           <div className="text-center animate-pulse">
-            <div className="w-32 h-32 border-4 border-amber-500 rounded-full flex items-center justify-center mx-auto mb-10 shadow-[0_0_50px_rgba(245,158,11,0.2)]">
-              <div className="w-6 h-6 bg-red-600 rounded-full"></div>
-            </div>
+            <div className="w-32 h-32 border-4 border-amber-500 rounded-full flex items-center justify-center mx-auto mb-10"><div className="w-6 h-6 bg-red-600 rounded-full"></div></div>
             <h1 className="text-4xl font-black text-amber-500 uppercase tracking-widest">Live Floor</h1>
           </div>
         </div>
       )}
 
       <div className="flex-none flex items-center justify-between mb-6">
-        <div className="flex p-1 bg-zinc-900 rounded-2xl border border-amber-900/20 shadow-lg">
+        <div className="flex p-1 bg-zinc-900 rounded-2xl">
           {(['house1', 'house2'] as HouseId[]).map((hId) => (
             <button key={hId} onClick={() => setActiveHouse(hId)} className={`px-6 py-2.5 rounded-xl text-[10px] font-black uppercase tracking-widest transition-all ${activeHouse === hId ? 'bg-amber-500 text-black' : 'text-amber-800'}`}>{HOUSE_NAMES[hId]}</button>
           ))}
@@ -280,12 +259,12 @@ const WorkerApp: React.FC = () => {
         </div>
       </div>
 
-      <div className="flex-grow grid grid-cols-2 gap-4 overflow-y-auto pb-6">
+      <div className="flex-grow grid grid-cols-2 gap-4 overflow-y-auto">
         {currentHouseTVs.map((tv) => (
-          <div key={tv.id} className="bg-zinc-900 border border-amber-900/20 rounded-[2rem] flex flex-col overflow-hidden shadow-xl">
-            <div className="bg-black/60 px-5 py-4 border-b border-amber-900/10 flex justify-between items-center"><h3 className="text-amber-500 font-black text-xs uppercase">{tv.name}</h3></div>
+          <div key={tv.id} className="bg-zinc-900 border border-amber-900/20 rounded-[2rem] flex flex-col overflow-hidden">
+            <div className="bg-black/60 px-5 py-4 flex justify-between items-center"><h3 className="text-amber-500 font-black text-xs uppercase">{tv.name}</h3></div>
             <div className="flex-grow p-4">
-              <button onClick={() => handleAddGame(tv.id, customPrices[tv.id] ?? tv.pricePerGame)} className="w-full h-16 bg-amber-500/5 border-2 border-dashed border-amber-500/40 rounded-2xl text-amber-500 font-black text-3xl hover:bg-amber-500/10 active:scale-95 transition-all">+</button>
+              <button onClick={() => handleAddGame(tv.id, customPrices[tv.id] ?? tv.pricePerGame)} className="w-full h-16 bg-amber-500/5 border-2 border-dashed border-amber-500/40 rounded-2xl text-amber-500 font-black text-3xl">+</button>
             </div>
           </div>
         ))}
