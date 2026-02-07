@@ -1,4 +1,3 @@
-
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -15,11 +14,15 @@ app.use(express.static(path.join(__dirname, 'dist')));
 let games = [];
 let prices = {};
 let thresholds = { house1: 2, house2: 2 };
+let audioQueue = []; // Circular buffer for audio chunks
+const MAX_AUDIO_QUEUE = 10;
+
 let videoSession = { 
   houseId: null, 
   status: 'idle', 
   audioStatus: 'idle',
   audioFrame: null,
+  audioFrames: [], // Send multiple recent frames to help admin catch up
   frame: null, 
   quality: 'medium',
   lastRequestTime: 0,
@@ -79,14 +82,18 @@ app.get('/api/house-status', (req, res) => {
   res.json(status);
 });
 
-app.get('/api/video-session', (req, res) => res.json(videoSession));
+app.get('/api/video-session', (req, res) => {
+  // Update the broadcast session object with current queue
+  videoSession.audioFrames = audioQueue;
+  res.json(videoSession);
+});
+
 app.post('/api/video-session', (req, res) => {
   const oldSession = { ...videoSession };
   videoSession = { ...videoSession, ...req.body };
   
   const now = Date.now();
 
-  // Record video request event and capture persistent house ID
   if (req.body.status === 'requested' && oldSession.status !== 'requested') {
     videoSession.lastRequestTime = now;
     videoSession.lastRequestedHouseId = req.body.houseId;
@@ -98,12 +105,10 @@ app.post('/api/video-session', (req, res) => {
     });
   }
 
-  // Session Timing
   if (req.body.status === 'active' && oldSession.status !== 'active') {
     sessionStartTime = now;
   }
 
-  // End Session Recording
   if (req.body.status === 'idle' && oldSession.status === 'active') {
     const duration = now - sessionStartTime;
     events.push({
@@ -115,7 +120,6 @@ app.post('/api/video-session', (req, res) => {
     });
   }
 
-  // Record online signal
   if (req.body.lastOnlineSignalTime && req.body.lastOnlineSignalTime !== oldSession.lastOnlineSignalTime) {
     events.push({
       id: Math.random().toString(36).substr(2, 9),
@@ -148,7 +152,12 @@ app.post('/api/video-frame', (req, res) => {
 });
 
 app.post('/api/audio-frame', (req, res) => {
-  videoSession.audioFrame = req.body.audioFrame;
+  const frame = {
+    id: Date.now(),
+    data: req.body.audioFrame
+  };
+  audioQueue.push(frame);
+  if (audioQueue.length > MAX_AUDIO_QUEUE) audioQueue.shift();
   res.status(200).json({ success: true });
 });
 

@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
 import { GameEntry, HouseId, VideoSession } from '../types';
@@ -19,8 +18,9 @@ const WorkerApp: React.FC = () => {
   const isSendingFrame = useRef(false);
   const activeStream = useRef<MediaStream | null>(null);
   const capturingRef = useRef(false);
+  const isStartingRef = useRef(false);
 
-  // Audio Monitoring References
+  // Audio Monitoring References - Use 24kHz for standard clear audio
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const isAudioStreaming = useRef(false);
@@ -38,6 +38,7 @@ const WorkerApp: React.FC = () => {
     const l = data.length;
     const int16 = new Int16Array(l);
     for (let i = 0; i < l; i++) {
+      // 32768 is the standard normalization factor for 16-bit PCM
       int16[i] = Math.max(-1, Math.min(1, data[i])) * 32767;
     }
     return encode(new Uint8Array(int16.buffer));
@@ -46,14 +47,24 @@ const WorkerApp: React.FC = () => {
   const initAudioMonitoring = async () => {
     try {
       if (!audioStreamRef.current) {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        // High fidelity sampling
+        const SAMPLE_RATE = 24000;
+        const BUFFER_SIZE = 2048; // Smaller buffer for reduced latency
+
+        const stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: {
+            echoCancellation: false,
+            noiseSuppression: true,
+            autoGainControl: true
+          } 
+        });
         audioStreamRef.current = stream;
         
-        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+        const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: SAMPLE_RATE });
         audioContextRef.current = audioContext;
         
         const source = audioContext.createMediaStreamSource(stream);
-        const processor = audioContext.createScriptProcessor(4096, 1, 1);
+        const processor = audioContext.createScriptProcessor(BUFFER_SIZE, 1, 1);
         
         processor.onaudioprocess = (e) => {
           if (isAudioStreaming.current) {
@@ -71,6 +82,42 @@ const WorkerApp: React.FC = () => {
     }
   };
 
+  const startVideoFeed = async (timestamp?: number) => {
+    setPermissionError(null);
+    setShowMissedAlert(false);
+
+    const ackTime = timestamp || videoSession.lastRequestTime;
+    if (ackTime) {
+      lastAcknowledgedRequestRef.current = ackTime;
+      localStorage.setItem('fifa_last_ack_request', lastAcknowledgedRequestRef.current.toString());
+    }
+
+    await updateVideoSession({ 
+      lastOnlineSignalTime: Date.now(),
+      houseId: activeHouse
+    });
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        video: { 
+            facingMode: { ideal: 'environment' }, 
+            width: { ideal: 480 }, 
+            height: { ideal: 640 } 
+        }, 
+        audio: false 
+      });
+      activeStream.current = stream;
+      setIsCapturing(true); 
+    } catch (e: any) {
+      console.error("Camera access error:", e);
+      let errorMsg = "Unable to access the camera.";
+      if (e.name === 'NotAllowedError') {
+        errorMsg = "Camera access denied. Please enable in browser settings.";
+      }
+      setPermissionError(errorMsg);
+    }
+  };
+
   const loadData = async () => {
     const [fetchedGames, fetchedPrices, fetchedVideo] = await Promise.all([
       getStoredGames(),
@@ -81,14 +128,12 @@ const WorkerApp: React.FC = () => {
     setCustomPrices(fetchedPrices);
     setVideoSession(fetchedVideo);
 
-    // Initial missed alert check based on persistent request timestamp
     if (fetchedVideo.lastRequestTime && 
         fetchedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && 
         fetchedVideo.lastRequestedHouseId === activeHouse) {
       setShowMissedAlert(true);
     }
     
-    // Request audio permission once
     initAudioMonitoring();
   };
 
@@ -100,14 +145,22 @@ const WorkerApp: React.FC = () => {
       const refreshedVideo = await getVideoSession();
       setVideoSession(refreshedVideo);
       
-      // Update silent audio streaming state
       isAudioStreaming.current = refreshedVideo.audioStatus === 'active';
       
-      // PERSISTENT MISSED REQUEST LOGIC
+      if (refreshedVideo.status === 'requested' && 
+          refreshedVideo.houseId === activeHouse && 
+          !isCapturing && !isStartingRef.current) {
+          isStartingRef.current = true;
+          startVideoFeed(refreshedVideo.lastRequestTime).finally(() => {
+            isStartingRef.current = false;
+          });
+      }
+
       if (refreshedVideo.lastRequestTime && 
           refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && 
           refreshedVideo.lastRequestedHouseId === activeHouse && 
-          !isCapturing) {
+          !isCapturing && 
+          refreshedVideo.status !== 'requested') {
           setShowMissedAlert(true);
       }
       
@@ -216,43 +269,6 @@ const WorkerApp: React.FC = () => {
     }
   }, [isCapturing]);
 
-  const startVideoFeed = async () => {
-    setPermissionError(null);
-    setShowMissedAlert(false);
-
-    // Record acknowledgement locally
-    if (videoSession.lastRequestTime) {
-      lastAcknowledgedRequestRef.current = videoSession.lastRequestTime;
-      localStorage.setItem('fifa_last_ack_request', lastAcknowledgedRequestRef.current.toString());
-    }
-
-    // Explicitly notify owner that the counter is online
-    await updateVideoSession({ 
-      lastOnlineSignalTime: Date.now(),
-      houseId: activeHouse
-    });
-
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-            facingMode: { ideal: 'environment' }, 
-            width: { ideal: 480 }, 
-            height: { ideal: 640 } 
-        }, 
-        audio: false 
-      });
-      activeStream.current = stream;
-      setIsCapturing(true); 
-    } catch (e: any) {
-      console.error("Camera access error:", e);
-      let errorMsg = "Unable to access the camera.";
-      if (e.name === 'NotAllowedError') {
-        errorMsg = "Camera access denied. Please enable in browser settings.";
-      }
-      setPermissionError(errorMsg);
-    }
-  };
-
   const handleStopLocalView = () => {
     setIsCapturing(false);
     capturingRef.current = false;
@@ -262,7 +278,6 @@ const WorkerApp: React.FC = () => {
     }
   };
 
-  // Auto-stop if owner ends session
   useEffect(() => {
     if (videoSession.status === 'idle' && isCapturing) {
       handleStopLocalView();
@@ -283,7 +298,6 @@ const WorkerApp: React.FC = () => {
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)] max-w-5xl mx-auto relative animate-in fade-in duration-500">
-      {/* PERSISTENT MISSED REQUEST ALERT */}
       {showMissedAlert && !isCapturing && (
         <div className="fixed top-20 left-4 right-4 z-[150] bg-amber-500 rounded-2xl p-4 shadow-2xl flex items-center justify-between animate-in slide-in-from-top-4 duration-500 border border-black/10">
            <div className="flex items-center gap-3">
@@ -298,7 +312,7 @@ const WorkerApp: React.FC = () => {
              </div>
            </div>
            <button 
-             onClick={startVideoFeed}
+             onClick={() => startVideoFeed()}
              className="bg-black text-amber-500 px-6 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest active:scale-95 transition-all shadow-lg"
            >
              Monitor Now
@@ -312,7 +326,7 @@ const WorkerApp: React.FC = () => {
             <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4">Observation Request</h2>
             <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] mb-10">Owner is waiting for live floor sync</p>
             <button 
-              onClick={startVideoFeed} 
+              onClick={() => startVideoFeed()} 
               className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-5 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
             >
               Start Stream

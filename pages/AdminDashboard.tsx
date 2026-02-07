@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { TV_CONFIGS, HOUSE_NAMES } from '../constants';
 import { GameEntry, HouseId, HouseThresholds, VideoSession, VideoQuality, SessionEvent } from '../types';
@@ -21,10 +20,11 @@ const AdminDashboard: React.FC = () => {
   const lastOnlineSignalRef = useRef<number>(0);
   const alertedHousesRef = useRef<Record<string, boolean>>({});
 
-  // Audio Playback References
+  // Audio Playback References - Optimized for clear playback
   const audioContextRef = useRef<AudioContext | null>(null);
   const nextStartTimeRef = useRef<number>(0);
-  const lastAudioFrameRef = useRef<string | null>(null);
+  const playedAudioIdsRef = useRef<Set<number>>(new Set());
+  const SAMPLE_RATE = 24000;
 
   const decode = (base64: string) => {
     const binaryString = atob(base64);
@@ -49,6 +49,7 @@ const AdminDashboard: React.FC = () => {
     for (let channel = 0; channel < numChannels; channel++) {
       const channelData = buffer.getChannelData(channel);
       for (let i = 0; i < frameCount; i++) {
+        // Precise normalization for crystal clear sound
         channelData[i] = dataInt16[i * numChannels + channel] / 32768.0;
       }
     }
@@ -60,14 +61,15 @@ const AdminDashboard: React.FC = () => {
     
     try {
       const bytes = decode(base64);
-      const audioBuffer = await decodeAudioData(bytes, audioContextRef.current, 16000, 1);
+      const audioBuffer = await decodeAudioData(bytes, audioContextRef.current, SAMPLE_RATE, 1);
       
       const source = audioContextRef.current.createBufferSource();
       source.buffer = audioBuffer;
       source.connect(audioContextRef.current.destination);
       
       const currentTime = audioContextRef.current.currentTime;
-      const startTime = Math.max(currentTime, nextStartTimeRef.current);
+      // Buffer a tiny bit more to prevent stuttering
+      const startTime = Math.max(currentTime + 0.05, nextStartTimeRef.current);
       
       source.start(startTime);
       nextStartTimeRef.current = startTime + audioBuffer.duration;
@@ -103,22 +105,41 @@ const AdminDashboard: React.FC = () => {
   };
 
   const refreshData = async () => {
-    const [freshGames, freshThresholds, freshVideo, freshStatus, freshEvents] = await Promise.all([
+    // Explicitly handle results from Promise.all to ensure proper type inference during destructuring
+    const results = await Promise.all([
       getStoredGames(),
       getThresholds(),
       getVideoSession(),
       getHouseStatus(),
       getEvents()
     ]);
+    
+    const freshGames = results[0] as GameEntry[];
+    const freshThresholds = results[1] as HouseThresholds;
+    const freshVideo = results[2] as VideoSession;
+    const freshStatus = results[3] as Record<string, boolean>;
+    const freshEvents = results[4] as SessionEvent[];
+
     setGames(freshGames);
     setThresholds(freshThresholds);
     setHouseStatus(freshStatus);
     setSessionEvents(freshEvents);
     
-    // Process relayed audio frames
-    if (isListening && freshVideo.audioFrame && freshVideo.audioFrame !== lastAudioFrameRef.current) {
-      playAudioFrame(freshVideo.audioFrame);
-      lastAudioFrameRef.current = freshVideo.audioFrame;
+    // Play all new chunks from the circular buffer
+    if (isListening && freshVideo.audioFrames && freshVideo.audioFrames.length > 0) {
+      for (const frame of freshVideo.audioFrames) {
+        // frame.id is recognized as number due to explicit typing of freshVideo
+        if (!playedAudioIdsRef.current.has(frame.id)) {
+          playAudioFrame(frame.data);
+          playedAudioIdsRef.current.add(frame.id);
+          // Keep set size manageable
+          if (playedAudioIdsRef.current.size > 100) {
+            const ids = Array.from(playedAudioIdsRef.current);
+            const minId = Math.min(...ids);
+            playedAudioIdsRef.current.delete(minId);
+          }
+        }
+      }
     }
 
     if (freshVideo.lastOnlineSignalTime && freshVideo.lastOnlineSignalTime > lastOnlineSignalRef.current) {
@@ -144,7 +165,6 @@ const AdminDashboard: React.FC = () => {
     return () => clearInterval(interval);
   }, [isObserving, isListening]);
 
-  // High-frequency polling for audio/video frames when active
   useEffect(() => {
     let frameInterval: number;
     if (isObserving || isListening) {
@@ -155,15 +175,20 @@ const AdminDashboard: React.FC = () => {
           frame: freshVideo.frame || prev.frame 
         }));
         
-        if (isListening && freshVideo.audioFrame && freshVideo.audioFrame !== lastAudioFrameRef.current) {
-          playAudioFrame(freshVideo.audioFrame);
-          lastAudioFrameRef.current = freshVideo.audioFrame;
+        // High-frequency playback of any missing chunks
+        if (isListening && freshVideo.audioFrames && freshVideo.audioFrames.length > 0) {
+          for (const frame of freshVideo.audioFrames) {
+            if (!playedAudioIdsRef.current.has(frame.id)) {
+              playAudioFrame(frame.data);
+              playedAudioIdsRef.current.add(frame.id);
+            }
+          }
         }
 
         if (freshVideo.status === 'idle') {
           setIsObserving(false);
         }
-      }, isListening ? 250 : 150); 
+      }, 100); // Poll faster for ultra-smooth real-time monitoring
     }
     return () => clearInterval(frameInterval);
   }, [isObserving, isListening]);
@@ -182,13 +207,13 @@ const AdminDashboard: React.FC = () => {
 
   const handleToggleAudio = async (houseId: HouseId) => {
     if (!isListening) {
-      // User gesture required to start AudioContext
       if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: SAMPLE_RATE });
       } else if (audioContextRef.current.state === 'suspended') {
         await audioContextRef.current.resume();
       }
       
+      playedAudioIdsRef.current.clear();
       setIsListening(true);
       await updateVideoSession({ audioStatus: 'active', houseId });
     } else {
@@ -324,7 +349,6 @@ const AdminDashboard: React.FC = () => {
         </div>
       )}
 
-      {/* Header with Permission Request */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="flex flex-col gap-1">
            <div className="flex items-center gap-3">
