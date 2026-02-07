@@ -19,6 +19,11 @@ const WorkerApp: React.FC = () => {
   const isSendingFrame = useRef(false);
   const activeStream = useRef<MediaStream | null>(null);
   const capturingRef = useRef(false);
+  const wakeLockRef = useRef<any>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+
+  // Background Worker for Throttling-Resistant Polling
+  const workerRef = useRef<Worker | null>(null);
 
   const loadData = async () => {
     const [fetchedGames, fetchedPrices, fetchedVideo] = await Promise.all([
@@ -30,38 +35,127 @@ const WorkerApp: React.FC = () => {
     setCustomPrices(fetchedPrices);
     setVideoSession(fetchedVideo);
 
-    // Initial missed alert check based on persistent request timestamp
     if (fetchedVideo.lastRequestTime && fetchedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && fetchedVideo.houseId === activeHouse) {
       setShowMissedAlert(true);
     }
   };
 
-  useEffect(() => {
-    loadData();
-    const interval = setInterval(async () => {
-      sendHeartbeat(activeHouse);
-
-      const refreshedVideo = await getVideoSession();
-      setVideoSession(refreshedVideo);
-      
-      // PERSISTENT MISSED REQUEST LOGIC
-      // Alert remains even if owner ends the active session session, until 'Monitor Now' is clicked
-      if (refreshedVideo.lastRequestTime && 
-          refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && 
-          refreshedVideo.houseId === activeHouse && 
-          !isCapturing) {
-          setShowMissedAlert(true);
+  // Screen Wake Lock to prevent backgrounding/sleeping
+  const requestWakeLock = async () => {
+    if ('wakeLock' in navigator) {
+      try {
+        wakeLockRef.current = await (navigator as any).wakeLock.request('screen');
+        wakeLockRef.current.addEventListener('release', () => {
+          console.log('Wake Lock was released');
+        });
+      } catch (err: any) {
+        console.error(`${err.name}, ${err.message}`);
       }
-      
-      const refreshedGames = await getStoredGames();
-      setGames(prev => {
-        const localMap = new Map(prev.map(g => [g.id, g]));
-        refreshedGames.forEach(g => localMap.set(g.id, g));
-        return Array.from(localMap.values()).sort((a,b) => a.timestamp - b.timestamp);
-      });
-    }, 4000);
-    return () => clearInterval(interval);
+    }
+  };
+
+  const releaseWakeLock = async () => {
+    if (wakeLockRef.current) {
+      await wakeLockRef.current.release();
+      wakeLockRef.current = null;
+    }
+  };
+
+  // Silent Audio Loop to prevent browser from suspending the tab
+  const startSilentAudio = () => {
+    try {
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const ctx = audioContextRef.current;
+      const oscillator = ctx.createOscillator();
+      const gainNode = ctx.createGain();
+
+      oscillator.type = 'sine';
+      oscillator.frequency.setValueAtTime(440, ctx.currentTime);
+      gainNode.gain.setValueAtTime(0, ctx.currentTime); // SILENT
+
+      oscillator.connect(gainNode);
+      gainNode.connect(ctx.destination);
+
+      oscillator.start();
+      console.log('Silent audio keeps process alive in background');
+    } catch (e) {
+      console.error('Audio survival hack failed', e);
+    }
+  };
+
+  // Web Worker for Background Heartbeats & Sync
+  useEffect(() => {
+    const workerCode = `
+      let interval;
+      self.onmessage = (e) => {
+        if (e.data === 'start') {
+          if (interval) clearInterval(interval);
+          interval = setInterval(() => self.postMessage('tick'), 4000);
+        } else if (e.data === 'stop') {
+          clearInterval(interval);
+        }
+      };
+    `;
+    const blob = new Blob([workerCode], { type: 'application/javascript' });
+    workerRef.current = new Worker(URL.createObjectURL(blob));
+
+    workerRef.current.onmessage = async (e) => {
+      if (e.data === 'tick') {
+        syncCycle();
+      }
+    };
+
+    workerRef.current.postMessage('start');
+    loadData();
+
+    // Re-acquire wake lock on visibility change
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && capturingRef.current) {
+        requestWakeLock();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
+    return () => {
+      workerRef.current?.postMessage('stop');
+      workerRef.current?.terminate();
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      releaseWakeLock();
+    };
+  }, []);
+
+  const activeHouseRef = useRef(activeHouse);
+  const isCapturingRef = useRef(isCapturing);
+  
+  useEffect(() => {
+    activeHouseRef.current = activeHouse;
+    isCapturingRef.current = isCapturing;
   }, [activeHouse, isCapturing]);
+
+  const syncCycle = async () => {
+    const hId = activeHouseRef.current;
+    const isCap = isCapturingRef.current;
+    
+    sendHeartbeat(hId);
+    const refreshedVideo = await getVideoSession();
+    setVideoSession(refreshedVideo);
+    
+    if (refreshedVideo.lastRequestTime && 
+        refreshedVideo.lastRequestTime > lastAcknowledgedRequestRef.current && 
+        refreshedVideo.houseId === hId && 
+        !isCap) {
+        setShowMissedAlert(true);
+    }
+    
+    const refreshedGames = await getStoredGames();
+    setGames(prev => {
+      const localMap = new Map(prev.map(g => [g.id, g]));
+      refreshedGames.forEach(g => localMap.set(g.id, g));
+      return Array.from(localMap.values()).sort((a,b) => a.timestamp - b.timestamp);
+    });
+  };
 
   const handleAddGame = (tvId: string, amount: number) => {
     const newGame: GameEntry = { 
@@ -74,7 +168,7 @@ const WorkerApp: React.FC = () => {
     
     setGames(prev => {
       const next = [...prev, newGame];
-      setTimeout(() => saveGames(next), 0);
+      saveGames(next);
       return next;
     });
   };
@@ -90,7 +184,7 @@ const WorkerApp: React.FC = () => {
     };
     setGames(prev => {
       const next = [...prev, newSep];
-      setTimeout(() => saveGames(next), 0);
+      saveGames(next);
       return next;
     });
   };
@@ -108,9 +202,9 @@ const WorkerApp: React.FC = () => {
         let width = 360, height = 480, compression = 0.5, delay = 100;
 
         if (quality === 'low') {
-          width = 240; height = 320; compression = 0.2; delay = 200;
+          width = 240; height = 320; compression = 0.2; delay = 250;
         } else if (quality === 'high') {
-          width = 480; height = 640; compression = 0.8; delay = 60;
+          width = 480; height = 640; compression = 0.75; delay = 80;
         }
 
         canvasRef.current.width = width;
@@ -127,18 +221,24 @@ const WorkerApp: React.FC = () => {
         }
 
         if (capturingRef.current) {
-          setTimeout(() => requestAnimationFrame(frameLoop), delay);
+          // In background, browsers throttle setTimeout heavily. 
+          // However, the silent audio and wake lock help mitigate this.
+          setTimeout(() => frameLoop(), delay);
         }
       }
     } else if (capturingRef.current) {
-      requestAnimationFrame(frameLoop);
+      setTimeout(() => frameLoop(), 100);
     }
   };
 
   useEffect(() => {
     capturingRef.current = isCapturing;
     if (isCapturing) {
+      requestWakeLock();
+      startSilentAudio();
       frameLoop();
+    } else {
+      releaseWakeLock();
     }
   }, [isCapturing]);
 
@@ -162,13 +262,11 @@ const WorkerApp: React.FC = () => {
     setPermissionError(null);
     setShowMissedAlert(false);
 
-    // Record acknowledgement locally
     if (videoSession.lastRequestTime) {
       lastAcknowledgedRequestRef.current = videoSession.lastRequestTime;
       localStorage.setItem('fifa_last_ack_request', lastAcknowledgedRequestRef.current.toString());
     }
 
-    // Explicitly notify owner that the counter is online
     await updateVideoSession({ 
       lastOnlineSignalTime: Date.now(),
       houseId: activeHouse
@@ -202,9 +300,13 @@ const WorkerApp: React.FC = () => {
       activeStream.current.getTracks().forEach(t => t.stop());
       activeStream.current = null;
     }
+    releaseWakeLock();
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
   };
 
-  // Auto-stop if owner ends session
   useEffect(() => {
     if (videoSession.status === 'idle' && isCapturing) {
       handleStopLocalView();
@@ -276,6 +378,8 @@ const WorkerApp: React.FC = () => {
           </div>
           <div className="absolute bottom-12 text-center">
             <p className="text-zinc-700 text-[10px] font-black uppercase tracking-widest">Only Owner Can End This Session</p>
+            {permissionError && <p className="text-red-500 text-[10px] mt-2 font-black">{permissionError}</p>}
+            <p className="text-amber-900/40 text-[8px] mt-4 font-black uppercase tracking-[0.2em]">App Locked: High Availability Mode</p>
           </div>
         </div>
       )}

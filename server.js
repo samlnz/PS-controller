@@ -79,6 +79,7 @@ app.get('/api/house-status', (req, res) => {
 app.get('/api/video-session', (req, res) => res.json(videoSession));
 app.post('/api/video-session', (req, res) => {
   const oldSession = { ...videoSession };
+  // Merge new data but preserve specific metadata if not explicitly cleared
   videoSession = { ...videoSession, ...req.body };
   
   const now = Date.now();

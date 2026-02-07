@@ -120,7 +120,8 @@ const AdminDashboard: React.FC = () => {
   };
 
   const handleEndVideo = async () => {
-    await updateVideoSession({ houseId: null, status: 'idle', frame: undefined });
+    // We preserve the houseId so the worker can still see "Missed Request" even if status is idle
+    await updateVideoSession({ status: 'idle', frame: undefined });
     setIsObserving(false);
   };
 
