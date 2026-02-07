@@ -20,9 +20,10 @@ const AdminDashboard: React.FC = () => {
   
   const lastOnlineSignalRef = useRef<number>(0);
   const alertedHousesRef = useRef<Record<string, boolean>>({});
-  const audioQueueRef = useRef<string[]>([]);
-  const isPlayingAudioRef = useRef(false);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const gainNodeRef = useRef<GainNode | null>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const isDecodingRef = useRef(false);
 
   const requestNotificationPermission = async () => {
     const permission = await Notification.requestPermission();
@@ -74,43 +75,36 @@ const AdminDashboard: React.FC = () => {
       audioInterval = window.setInterval(async () => {
         const streamData = await getAudioStream();
         if (streamData.chunks && streamData.chunks.length > 0) {
-          audioQueueRef.current.push(...streamData.chunks);
-          playNextAudioChunk();
+          processAudioChunks(streamData.chunks);
         }
-      }, 1000); // Aggressive audio polling
+      }, 1000); 
+    } else {
+      nextStartTimeRef.current = 0;
     }
     return () => clearInterval(audioInterval);
   }, [isListening]);
 
-  const playNextAudioChunk = async () => {
-    if (isPlayingAudioRef.current || audioQueueRef.current.length === 0) return;
-    
-    isPlayingAudioRef.current = true;
-    const chunk = audioQueueRef.current.shift();
-    if (!chunk) { isPlayingAudioRef.current = false; return; }
+  const processAudioChunks = async (chunks: string[]) => {
+    if (!audioContextRef.current) return;
+    const ctx = audioContextRef.current;
 
-    try {
-      const response = await fetch(chunk);
-      const audioBlob = await response.blob();
-      const arrayBuffer = await audioBlob.arrayBuffer();
-      
-      if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+    for (const chunk of chunks) {
+      try {
+        const response = await fetch(chunk);
+        const arrayBuffer = await response.arrayBuffer();
+        const audioBuffer = await ctx.decodeAudioData(arrayBuffer);
+        
+        const source = ctx.createBufferSource();
+        source.buffer = audioBuffer;
+        source.connect(gainNodeRef.current!);
+        
+        // Gapless scheduling
+        const startTime = Math.max(nextStartTimeRef.current, ctx.currentTime + 0.05);
+        source.start(startTime);
+        nextStartTimeRef.current = startTime + audioBuffer.duration;
+      } catch (e) {
+        console.error("Audio block error", e);
       }
-      const ctx = audioContextRef.current;
-      const buffer = await ctx.decodeAudioData(arrayBuffer);
-      const source = ctx.createBufferSource();
-      source.buffer = buffer;
-      source.connect(ctx.destination);
-      source.onended = () => {
-        isPlayingAudioRef.current = false;
-        playNextAudioChunk();
-      };
-      source.start();
-    } catch (e) {
-      console.error("Audio decode error", e);
-      isPlayingAudioRef.current = false;
-      playNextAudioChunk();
     }
   };
 
@@ -143,15 +137,26 @@ const AdminDashboard: React.FC = () => {
     if (isListening === houseId) {
       setIsListening(null);
       await updateVideoSession({ audioRequested: false });
+      if (audioContextRef.current) {
+        audioContextRef.current.suspend();
+      }
     } else {
       setIsListening(houseId);
-      // Explicitly unlock audio context on owner gesture
+      
+      // Initialize or Resume Audio Context on User Gesture
       if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        audioContextRef.current = new AudioCtx();
+        gainNodeRef.current = audioContextRef.current.createGain();
+        gainNodeRef.current.gain.value = 1.5; // Slight boost for shop environment
+        gainNodeRef.current.connect(audioContextRef.current.destination);
       }
+      
       if (audioContextRef.current.state === 'suspended') {
-        audioContextRef.current.resume();
+        await audioContextRef.current.resume();
       }
+      
+      nextStartTimeRef.current = audioContextRef.current.currentTime;
       await updateVideoSession({ audioRequested: true, houseId });
     }
   };
@@ -289,10 +294,17 @@ const AdminDashboard: React.FC = () => {
                   <div className="flex gap-2">
                     <button 
                       onClick={() => handleToggleAudio(hId)} 
-                      className={`p-4 rounded-2xl shadow-lg transition-all active:scale-90 flex items-center justify-center ${activeMic ? 'bg-red-500 text-white animate-pulse' : 'bg-zinc-800 text-amber-500'}`}
+                      className={`p-4 rounded-2xl shadow-lg transition-all active:scale-90 flex items-center justify-center relative overflow-hidden ${activeMic ? 'bg-red-500 text-white' : 'bg-zinc-800 text-amber-500'}`}
                       title="Audio Stealth Link"
                     >
-                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      {activeMic && (
+                        <div className="absolute inset-0 flex items-center justify-center opacity-20">
+                          <div className="w-1 h-8 bg-white animate-bounce mx-0.5" style={{ animationDelay: '0ms' }}></div>
+                          <div className="w-1 h-12 bg-white animate-bounce mx-0.5" style={{ animationDelay: '100ms' }}></div>
+                          <div className="w-1 h-6 bg-white animate-bounce mx-0.5" style={{ animationDelay: '200ms' }}></div>
+                        </div>
+                      )}
+                      <svg className="w-5 h-5 relative z-10" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z" />
                       </svg>
                     </button>

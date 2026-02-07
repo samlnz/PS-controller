@@ -62,7 +62,8 @@ const WorkerApp: React.FC = () => {
   const startSilentAudio = () => {
     try {
       if (!audioContextRef.current) {
-        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+        const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+        audioContextRef.current = new AudioCtx();
       }
       const ctx = audioContextRef.current;
       const oscillator = ctx.createOscillator();
@@ -133,12 +134,19 @@ const WorkerApp: React.FC = () => {
 
   const startBackgroundAudioCapture = async () => {
     try {
-      const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const audioStream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }, 
+        video: false 
+      });
+      
       const recorder = new MediaRecorder(audioStream);
       mediaRecorderRef.current = recorder;
       
       recorder.ondataavailable = async (e) => {
-        // Use Ref here to ensure we have the absolute latest request status
         if (e.data.size > 0 && audioRequestedRef.current) {
           const reader = new FileReader();
           reader.readAsDataURL(e.data);
@@ -149,7 +157,7 @@ const WorkerApp: React.FC = () => {
         }
       };
       
-      recorder.start(1000); // Send 1-second chunks for lower latency
+      recorder.start(1000); // 1-second chunks for better responsiveness
       setMicSynced(true);
       localStorage.setItem('fifa_mic_synced', 'true');
     } catch (e) {
