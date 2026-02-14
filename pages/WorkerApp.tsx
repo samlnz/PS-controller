@@ -427,7 +427,7 @@ const WorkerApp: React.FC = () => {
           <div className="text-right">
             <p className="text-[10px] text-amber-800 font-black uppercase tracking-widest">Yield</p>
             <p className="text-2xl font-black text-amber-500 tracking-tighter tabular-nums">
-              {isYieldVisible ? hStats.revenue.toLocaleString() : '********'} 
+              {isYieldVisible ? hStats.revenue.toLocaleString() : '*'.repeat(hStats.revenue.toLocaleString().length)} 
               <span className="text-xs ml-1">ETB</span>
             </p>
           </div>
