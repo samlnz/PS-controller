@@ -21,10 +21,52 @@ const WorkerApp: React.FC = () => {
   const capturingRef = useRef(false);
   const isStartingRef = useRef(false);
 
+  // Alert References for Ringing/Vibrating
+  const ringtoneRef = useRef<HTMLAudioElement | null>(null);
+  const vibrationIntervalRef = useRef<number | null>(null);
+
   // Audio Monitoring References - Use 24kHz for standard clear audio
   const audioContextRef = useRef<AudioContext | null>(null);
   const audioStreamRef = useRef<MediaStream | null>(null);
   const isAudioStreaming = useRef(false);
+
+  // Handle Ringing and Vibration for Video Requests
+  useEffect(() => {
+    const isRequested = videoSession.status === 'requested' && videoSession.houseId === activeHouse && !isCapturing;
+    
+    if (isRequested) {
+      // Start Ringtone
+      if (!ringtoneRef.current) {
+        // High-pitch alert sound that catches attention
+        ringtoneRef.current = new Audio('https://assets.mixkit.co/active_storage/sfx/1356/1356-preview.mp3');
+        ringtoneRef.current.loop = true;
+      }
+      ringtoneRef.current.play().catch(e => console.warn("Ringtone playback blocked by browser policies until interaction", e));
+
+      // Start Vibration Loop (500ms on, 500ms off)
+      if (!vibrationIntervalRef.current && 'vibrate' in navigator) {
+        vibrationIntervalRef.current = window.setInterval(() => {
+          navigator.vibrate([500, 500]);
+        }, 1000);
+      }
+    } else {
+      // Cleanup Alerts when not requested, or when picked up
+      if (ringtoneRef.current) {
+        ringtoneRef.current.pause();
+        ringtoneRef.current.currentTime = 0;
+      }
+      if (vibrationIntervalRef.current) {
+        clearInterval(vibrationIntervalRef.current);
+        vibrationIntervalRef.current = null;
+        if ('vibrate' in navigator) navigator.vibrate(0);
+      }
+    }
+
+    return () => {
+      if (vibrationIntervalRef.current) clearInterval(vibrationIntervalRef.current);
+      if (ringtoneRef.current) ringtoneRef.current.pause();
+    };
+  }, [videoSession.status, videoSession.houseId, activeHouse, isCapturing]);
 
   // Auto-hide yield after 10 seconds
   useEffect(() => {
@@ -50,7 +92,6 @@ const WorkerApp: React.FC = () => {
     const l = data.length;
     const int16 = new Int16Array(l);
     for (let i = 0; i < l; i++) {
-      // 32768 is the standard normalization factor for 16-bit PCM
       int16[i] = Math.max(-1, Math.min(1, data[i])) * 32767;
     }
     return encode(new Uint8Array(int16.buffer));
@@ -59,9 +100,8 @@ const WorkerApp: React.FC = () => {
   const initAudioMonitoring = async () => {
     try {
       if (!audioStreamRef.current) {
-        // High fidelity sampling
         const SAMPLE_RATE = 24000;
-        const BUFFER_SIZE = 2048; // Smaller buffer for reduced latency
+        const BUFFER_SIZE = 2048;
 
         const stream = await navigator.mediaDevices.getUserMedia({ 
           audio: {
@@ -163,9 +203,8 @@ const WorkerApp: React.FC = () => {
           refreshedVideo.houseId === activeHouse && 
           !isCapturing && !isStartingRef.current) {
           isStartingRef.current = true;
-          startVideoFeed(refreshedVideo.lastRequestTime).finally(() => {
-            isStartingRef.current = false;
-          });
+          // Note: Manual pick up required to stop the ringing
+          isStartingRef.current = false;
       }
 
       if (refreshedVideo.lastRequestTime && 
@@ -335,13 +374,21 @@ const WorkerApp: React.FC = () => {
       {videoSession.status === 'requested' && videoSession.houseId === activeHouse && !isCapturing && !showMissedAlert && (
         <div className="fixed inset-0 z-[200] bg-black/90 flex items-center justify-center p-4 backdrop-blur-xl">
           <div className="w-full max-sm bg-zinc-950 border border-amber-500 rounded-[3rem] p-10 text-center shadow-2xl shadow-amber-500/20">
-            <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4">Observation Request</h2>
-            <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] mb-10">Owner is waiting for live floor sync</p>
+            <h2 className="text-2xl font-black text-amber-500 uppercase tracking-tighter mb-4 animate-bounce">Observation Request</h2>
+            <div className="flex justify-center mb-8">
+               <div className="w-24 h-24 bg-amber-500/20 rounded-full flex items-center justify-center animate-pulse relative">
+                  <div className="absolute inset-0 bg-amber-500/10 rounded-full animate-ping"></div>
+                  <svg className="w-12 h-12 text-amber-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3 5a2 2 0 012-2h3.28a1 1 0 01.948.684l1.498 4.493a1 1 0 01-.502 1.21l-2.257 1.13a11.042 11.042 0 005.516 5.516l1.13-2.257a1 1 0 011.21-.502l4.493 1.498a1 1 0 01.684.949V19a2 2 0 01-2 2h-1C9.716 21 3 14.284 3 6V5z" />
+                  </svg>
+               </div>
+            </div>
+            <p className="text-amber-800 text-[10px] font-black uppercase tracking-[0.2em] mb-10">Owner is calling for live floor sync...</p>
             <button 
               onClick={() => startVideoFeed()} 
               className="w-full bg-amber-500 hover:bg-amber-400 text-black font-black py-5 rounded-2xl uppercase tracking-[0.2em] shadow-xl shadow-amber-500/20 active:scale-95 transition-all"
             >
-              Start Stream
+              Start Stream (Pick Up)
             </button>
           </div>
         </div>
